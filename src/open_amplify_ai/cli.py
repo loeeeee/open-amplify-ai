@@ -2,7 +2,7 @@ import argparse
 import sys
 import logging
 
-from amplify_ai import probe_api, server
+from open_amplify_ai import probe_api, server
 
 logger = logging.getLogger(__name__)
 
