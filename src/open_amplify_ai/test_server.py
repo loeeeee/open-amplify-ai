@@ -129,9 +129,83 @@ def test_chat_completions_success(mocker):
 
 def test_chat_completions_invalid_request():
     """POST /v1/chat/completions returns 400 when messages are malformed."""
-    req_body = {"messages": [{"role": "user"}]}  # missing content field
+    req_body = {"messages": "this is not a list"}
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 400
+
+
+def test_chat_completions_extra_fields(mocker):
+    """POST /v1/chat/completions ignores extra fields like 'name' in messages without failing."""
+    mock_response = mocker.Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "success": True,
+        "data": "ok",
+    }
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello", "name": "Cline"}],
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["choices"][0]["message"]["content"] == "ok"
+
+
+def test_chat_completions_list_content(mocker):
+    """POST /v1/chat/completions extracts text if content is a list of dicts."""
+    captured = {}
+    def fake_post(url, headers, json, timeout):
+        captured["payload"] = json
+        mock = mocker.Mock()
+        mock.raise_for_status = mocker.Mock()
+        mock.json.return_value = {"success": True, "data": "ok"}
+        return mock
+    mocker.patch("open_amplify_ai.server.requests.post", side_effect=fake_post)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is "},
+                    {"type": "text", "text": "Linux?"}
+                ]
+            }
+        ]
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    assert captured["payload"]["data"]["messages"][0]["content"] == "What is Linux?"
+
+
+def test_chat_completions_stream_options(mocker):
+    """POST /v1/chat/completions with stream_options and include_usage emits a usage chunk."""
+    mock_cm = mocker.MagicMock()
+    mock_cm.__enter__ = mocker.Mock(return_value=mock_cm)
+    mock_cm.__exit__ = mocker.Mock(return_value=False)
+    mock_cm.status_code = 200
+    mock_cm.raise_for_status = mocker.Mock()
+    mock_cm.iter_lines = mocker.Mock(
+        return_value=[b"data: Hello"]
+    )
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_cm)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": True,
+        "stream_options": {"include_usage": True}
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    body = response.text
+    # Should contain a chunk with an empty choices list and a usage block
+    assert '"choices": []' in body
+    assert '"usage":' in body
 
 
 def test_chat_completions_streaming(mocker):

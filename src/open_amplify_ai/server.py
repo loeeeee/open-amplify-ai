@@ -66,6 +66,7 @@ class ChatCompletionRequest:
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 4000
     stream: Optional[bool] = False
+    stream_options: Optional[Dict[str, Any]] = None
 
 
 # Amplify request/response typed dicts ----------------------------------------
@@ -304,6 +305,7 @@ def stream_amplify_chat(
     model: str,
     completion_id: str,
     created: int,
+    include_usage: bool = False,
 ) -> Iterator[str]:
     """
     Stream an Amplify /chat response and yield OpenAI-format SSE chunks.
@@ -348,6 +350,7 @@ def stream_amplify_chat(
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model,
+                    "system_fingerprint": "",
                     "choices": [
                         {
                             "index": 0,
@@ -364,9 +367,27 @@ def stream_amplify_chat(
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
+        "system_fingerprint": "",
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
     }
     yield f"data: {json.dumps(final_chunk)}\n\n"
+    
+    if include_usage:
+        usage_chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "system_fingerprint": "",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        }
+        yield f"data: {json.dumps(usage_chunk)}\n\n"
+
     yield "data: [DONE]\n\n"
 
 
@@ -469,13 +490,30 @@ async def create_chat_completion(
     """
     try:
         req_json = await request.json()
-        messages = [ChatMessage(**m) for m in req_json.get("messages", [])]
+        
+        parsed_messages = []
+        for m in req_json.get("messages", []):
+            role = m.get("role", "user")
+            content_raw = m.get("content", "")
+            if isinstance(content_raw, list):
+                content_text = ""
+                for part in content_raw:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        content_text += part.get("text", "")
+                    elif isinstance(part, str):
+                        content_text += part
+                content = content_text
+            else:
+                content = str(content_raw)
+            parsed_messages.append(ChatMessage(role=role, content=content))
+            
         chat_request = ChatCompletionRequest(
             model=req_json.get("model", ""),
-            messages=messages,
+            messages=parsed_messages,
             temperature=req_json.get("temperature", 0.7),
             max_tokens=req_json.get("max_tokens", 4000),
             stream=req_json.get("stream", False),
+            stream_options=req_json.get("stream_options"),
         )
     except Exception as e:
         logger.error("Invalid request format: %s", e)
@@ -499,6 +537,11 @@ async def create_chat_completion(
 
     if chat_request.stream:
         logger.info("Streaming response requested for model %s", chat_request.model)
+        
+        include_usage = False
+        if chat_request.stream_options and chat_request.stream_options.get("include_usage"):
+            include_usage = True
+            
         return StreamingResponse(
             stream_amplify_chat(
                 amplify_request=amplify_request,
@@ -506,6 +549,7 @@ async def create_chat_completion(
                 model=chat_request.model,
                 completion_id=completion_id,
                 created=created,
+                include_usage=include_usage,
             ),
             media_type="text/event-stream",
         )
@@ -529,6 +573,7 @@ async def create_chat_completion(
             "object": "chat.completion",
             "created": created,
             "model": chat_request.model,
+            "system_fingerprint": "",
             "choices": [
                 {
                     "index": 0,
