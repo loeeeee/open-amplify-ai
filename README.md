@@ -2,7 +2,8 @@
 
 ![Build](https://github.com/loeeeee/amplify-ai/actions/workflows/build.yml/badge.svg)
 
-This project provides an OpenAI-compatible wrapper for the Amplify AI API used at Vanderbilt University.
+This project provides an OpenAI-compatible wrapper for the Amplify AI API used at 
+Vanderbilt University.
 
 ## OpenAI Compatible Server
 We have added an OpenAI-compatible API layer that translates requests to the Amplify AI format.
@@ -83,8 +84,92 @@ To probe all documented endpoints (including conflict variants), run:
 ```bash
 amplify probe
 ```
-The script reads `AMPLIFY_AI_TOKEN` and `AMPLIFY_AI_EMAIL` from `.env`, probes all endpoints (including conflict variants for `/chat`, `/files/upload`, and `/files/tags/list`), and generates:
+The script reads `AMPLIFY_AI_TOKEN` and `AMPLIFY_AI_EMAIL` from `.env`, probes all endpoints 
+(including conflict variants for `/chat`, `/files/upload`, and `/files/tags/list`), and generates:
 - `docs-vibe/17_amplify_api_report.md` — full diagnostic report
 - `docs/amplify_api_probed.md` — concise verified API reference
 
 Email addresses are redacted in all generated reports.
+
+## NixOS Installation
+
+The `nix/` directory provides a NixOS module to run the server as a persistent systemd service.
+No local checkout is needed — the module is fetched directly from GitHub.
+
+### Secrets Setup
+
+Secrets are never stored in the Nix store (world-readable). Create a secrets file on the
+target machine before running `nixos-rebuild`:
+
+```bash
+sudo install -m 400 -o root -g root /dev/null /run/secrets/amplify-ai.env
+sudo tee /run/secrets/amplify-ai.env <<EOF
+AMPLIFY_AI_TOKEN=amp-v1-...
+AMPLIFY_AI_EMAIL=you@vanderbilt.edu
+EOF
+```
+
+Consider using [agenix](https://github.com/ryantm/agenix) or
+[sops-nix](https://github.com/Mic92/sops-nix) to manage this file declaratively.
+
+### configuration.nix
+
+Use `builtins.fetchTarball` to pull the module directly from GitHub:
+
+```nix
+{ config, pkgs, ... }:
+
+let
+  amplifyAiSrc = builtins.fetchTarball {
+    # Pin to a specific commit SHA for reproducibility.
+    # Replace <commit-sha> with the desired commit or use the branch tarball below.
+    url    = "https://github.com/loeeeee/amplify-ai/archive/<commit-sha>.tar.gz";
+    sha256 = "sha256:0000000000000000000000000000000000000000000000000000";
+  };
+in {
+  imports = [ "${amplifyAiSrc}/nix/module.nix" ];
+
+  services.amplify-ai = {
+    enable          = true;
+    environmentFile = /run/secrets/amplify-ai.env;
+
+    # Optional overrides (shown with defaults):
+    # host        = "127.0.0.1";  # use "0.0.0.0" to expose on all interfaces
+    # port        = 8000;
+    # openFirewall = false;       # set true to open the TCP port in the firewall
+  };
+}
+```
+
+**Get the correct `sha256`** for a given commit:
+
+```bash
+nix-prefetch-url --unpack \
+  https://github.com/loeeeee/amplify-ai/archive/<commit-sha>.tar.gz
+```
+
+Or to quickly try the latest `main` branch before pinning (not reproducible):
+
+```nix
+url = "https://github.com/loeeeee/amplify-ai/archive/refs/heads/main.tar.gz";
+# omit sha256 for a one-off test; always pin in production
+```
+
+Then apply and verify:
+
+```bash
+sudo nixos-rebuild switch
+systemctl status amplify-ai
+curl http://localhost:8000/v1/models
+```
+
+### Service Details
+
+| Property | Value |
+|---|---|
+| Systemd unit | `amplify-ai.service` |
+| Default bind | `127.0.0.1:8000` |
+| Log / state dir | `/var/lib/amplify-ai/` |
+| User | ephemeral (`DynamicUser = true`) |
+| Restart policy | `on-failure`, 5 s back-off |
+
