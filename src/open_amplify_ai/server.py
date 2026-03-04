@@ -219,6 +219,17 @@ def not_implemented(feature: str) -> HTTPException:
     return HTTPException(status_code=501, detail=f"{feature} is not supported by the Amplify AI backend.")
 
 
+def _estimate_bytes(item: Dict[str, Any]) -> int:
+    """Estimate bytes from totalTokens which can be an int or a dict."""
+    tokens = item.get("totalTokens", 0)
+    if isinstance(tokens, dict):
+        # average or max them, just pick gpt or first value
+        tokens = tokens.get("gpt", next(iter(tokens.values())) if tokens else 0)
+    elif not isinstance(tokens, (int, float)):
+        tokens = 0
+    return int(tokens) * 4
+
+
 def amplify_item_to_openai_file(item: Dict[str, Any]) -> Dict[str, Any]:
     """Map an Amplify file record to an OpenAI File object shape."""
     created_at = 0
@@ -231,7 +242,7 @@ def amplify_item_to_openai_file(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": item.get("id", ""),
         "object": "file",
-        "bytes": item.get("totalTokens", 0) * 4,  # rough byte estimate from tokens
+        "bytes": _estimate_bytes(item),
         "created_at": created_at,
         "filename": item.get("name", ""),
         "purpose": "assistants",
@@ -895,7 +906,6 @@ async def create_assistant(
         "data": {
             "name": body.get("name", ""),
             "description": body.get("description", ""),
-            "assistantId": "",
             "tags": body.get("metadata", {}).get("tags", []) if body.get("metadata") else [],
             "instructions": body.get("instructions", ""),
             "dataSources": [],

@@ -8,6 +8,9 @@ Vanderbilt University.
 ## OpenAI Compatible Server
 We have added an OpenAI-compatible API layer that translates requests to the Amplify AI format.
 
+### Documentation
+- [Amplify to OpenAI Response Mapping](docs/amplify_to_openai_response_mapping.md) — Details how responses and tool calls are parsed from the Amplify backend.
+
 ### Running the server
 You can start the server locally by running:
 ```bash

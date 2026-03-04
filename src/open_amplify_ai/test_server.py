@@ -1,6 +1,7 @@
 import io
 import pytest
 import os
+import requests
 from fastapi.testclient import TestClient
 from open_amplify_ai.server import app
 
@@ -862,6 +863,86 @@ def test_delete_vector_store_file_not_implemented():
     """DELETE /v1/vector_stores/{id}/files/{file_id} returns 501."""
     response = client.delete("/v1/vector_stores/my-store/files/file-abc")
     assert response.status_code == 501
+
+
+# ---------------------------------------------------------------------------
+# Strict Coverage / Edge Cases
+# ---------------------------------------------------------------------------
+
+
+def test_missing_auth_token():
+    """Endpoints should return 401 if AMPLIFY_AI_TOKEN is missing."""
+    # Temporarily remove token
+    original_token = os.environ.get("AMPLIFY_AI_TOKEN")
+    if "AMPLIFY_AI_TOKEN" in os.environ:
+        del os.environ["AMPLIFY_AI_TOKEN"]
+
+    try:
+        response = client.get("/v1/models")
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Amplify AI token not configured"
+    finally:
+        # Restore token
+        if original_token is not None:
+            os.environ["AMPLIFY_AI_TOKEN"] = original_token
+
+
+def test_upload_file_s3_put_failure(mocker):
+    """POST /v1/files returns 500 when S3 PUT fails after initial Amplify POST succeeds."""
+    init_mock = mocker.Mock()
+    init_mock.raise_for_status = mocker.Mock()
+    init_mock.json.return_value = {
+        "success": True,
+        "uploadUrl": "https://s3.example.com/upload?signed=true",
+        "key": "user/123.pdf",
+    }
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=init_mock)
+
+    s3_mock = mocker.Mock()
+    s3_mock.raise_for_status = mocker.Mock(side_effect=requests.exceptions.RequestException("S3 Error"))
+    mocker.patch("open_amplify_ai.server.requests.put", return_value=s3_mock)
+
+    response = client.post(
+        "/v1/files",
+        files={"file": ("file.txt", io.BytesIO(b"content"), "text/plain")},
+    )
+    assert response.status_code == 500
+    assert "Error communicating with Amplify AI" in response.json()["detail"]
+
+
+def test_delete_file_amplify_failure(mocker):
+    """DELETE /v1/files/{file_id} returns deleted=False when Amplify returns success=False."""
+    mock_response = mocker.Mock()
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json.return_value = {"success": False, "error": "Not found"}
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
+
+    response = client.delete("/v1/files/user@vu.edu/2024-01-01/abc.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["deleted"] is False
+
+
+def test_chat_completions_json_invalid(mocker):
+    """POST /v1/chat/completions yields raw string on invalid JSON in SSE."""
+    mock_cm = mocker.MagicMock()
+    mock_cm.__enter__ = mocker.Mock(return_value=mock_cm)
+    mock_cm.__exit__ = mocker.Mock(return_value=False)
+    mock_cm.status_code = 200
+    mock_cm.raise_for_status = mocker.Mock()
+    mock_cm.iter_lines = mocker.Mock(
+        return_value=[b'data: {invalid json snippet']
+    )
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_cm)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": True,
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    assert "{invalid json snippet" in response.text
 
 
 # ---------------------------------------------------------------------------
