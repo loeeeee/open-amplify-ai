@@ -13,7 +13,7 @@ You can start the server locally by running:
 ```bash
 amplify server
 ```
-The server will bind to `http://0.0.0.0:8000` by default.
+The server will bind to `http://0.0.0.0:8080` by default.
 
 ### Endpoints Supported
 
@@ -135,7 +135,7 @@ in {
 
     # Optional overrides (shown with defaults):
     # host        = "127.0.0.1";  # use "0.0.0.0" to expose on all interfaces
-    # port        = 8000;
+    # port        = 8080;
     # openFirewall = false;       # set true to open the TCP port in the firewall
   };
 }
@@ -160,7 +160,7 @@ Then apply and verify:
 ```bash
 sudo nixos-rebuild switch
 systemctl status amplify-ai
-curl http://localhost:8000/v1/models
+curl http://localhost:8080/v1/models
 ```
 
 ### Service Details
@@ -168,7 +168,7 @@ curl http://localhost:8000/v1/models
 | Property | Value |
 |---|---|
 | Systemd unit | `amplify-ai.service` |
-| Default bind | `127.0.0.1:8000` |
+| Default bind | `127.0.0.1:8080` |
 | Log / state dir | `/var/lib/amplify-ai/` |
 | User | ephemeral (`DynamicUser = true`) |
 | Restart policy | `on-failure`, 5 s back-off |
