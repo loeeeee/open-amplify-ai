@@ -345,6 +345,37 @@ def stream_amplify_chat(
                 content_delta = line_str
 
             if content_delta:
+                # Try to parse content_delta as a tool call (kilo formatting)
+                tool_calls = None
+                parsed_content_delta = None
+                
+                # Check if it looks like a complete JSON tool call
+                if isinstance(content_delta, str) and content_delta.strip().startswith('{"command"'):
+                    try:
+                        parsed_content = json.loads(content_delta)
+                        tool_calls = [
+                            {
+                                "index": 0,
+                                "id": f"call_{uuid.uuid4().hex[:12]}",
+                                "type": "function",
+                                "function": {
+                                    "name": parsed_content.get("command"),
+                                    "arguments": json.dumps(parsed_content.get("parameters", {}))
+                                }
+                            }
+                        ]
+                        parsed_content_delta = None
+                    except json.JSONDecodeError:
+                        parsed_content_delta = content_delta
+                else:
+                    parsed_content_delta = content_delta
+
+                delta_obj = {"role": "assistant"}
+                if parsed_content_delta is not None:
+                    delta_obj["content"] = parsed_content_delta
+                elif tool_calls is not None:
+                    delta_obj["tool_calls"] = tool_calls
+
                 chunk = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
@@ -354,7 +385,7 @@ def stream_amplify_chat(
                     "choices": [
                         {
                             "index": 0,
-                            "delta": {"role": "assistant", "content": content_delta},
+                            "delta": delta_obj,
                             "finish_reason": None,
                         }
                     ],
@@ -568,6 +599,31 @@ async def create_chat_completion(
             content = data.get("data", "")
         except Exception:
             content = response.text
+            
+        # Try to parse content as a tool call (kilo formatting)
+        tool_calls = None
+        if isinstance(content, str) and content.strip().startswith('{"command"'):
+            try:
+                parsed_content = json.loads(content)
+                tool_calls = [
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:12]}",
+                        "type": "function",
+                        "function": {
+                            "name": parsed_content.get("command"),
+                            "arguments": json.dumps(parsed_content.get("parameters", {}))
+                        }
+                    }
+                ]
+                content = None
+            except json.JSONDecodeError:
+                pass
+
+        message_obj = {"role": "assistant"}
+        if content is not None:
+            message_obj["content"] = content
+        if tool_calls is not None:
+            message_obj["tool_calls"] = tool_calls
 
         return {
             "id": completion_id,
@@ -578,8 +634,8 @@ async def create_chat_completion(
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": content},
-                    "finish_reason": "stop",
+                    "message": message_obj,
+                    "finish_reason": "tool_calls" if tool_calls else "stop",
                 }
             ],
             "usage": {

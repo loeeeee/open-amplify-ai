@@ -208,6 +208,36 @@ def test_chat_completions_stream_options(mocker):
     assert '"usage":' in body
 
 
+def test_chat_completions_tool_call_parsing(mocker):
+    """POST /v1/chat/completions parses a JSON string command into structured tool_calls."""
+    mock_response = mocker.Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "success": True,
+        "data": '{"command":"list_files","parameters":{"path":"","recursive":true}}',
+    }
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "List files in the dir"}],
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    data = response.json()
+    choice = data["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert "tool_calls" in choice["message"]
+    assert "content" not in choice["message"] or choice["message"]["content"] is None
+    
+    tool_call = choice["message"]["tool_calls"][0]
+    assert tool_call["type"] == "function"
+    assert tool_call["function"]["name"] == "list_files"
+    import json
+    args = json.loads(tool_call["function"]["arguments"])
+    assert args["recursive"] is True
+
+
 def test_chat_completions_streaming(mocker):
     """POST /v1/chat/completions with stream=True returns text/event-stream SSE."""
     mock_cm = mocker.MagicMock()
@@ -216,7 +246,11 @@ def test_chat_completions_streaming(mocker):
     mock_cm.status_code = 200
     mock_cm.raise_for_status = mocker.Mock()
     mock_cm.iter_lines = mocker.Mock(
-        return_value=[b"data: Hello", b"data: world"]
+        return_value=[
+            b'data: {"data":"Hello"}',
+            b'data: {"data":"{\\"command\\":\\"foo\\",\\"parameters\\":{}}"}',
+            b"data: [DONE]"
+        ]
     )
     mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_cm)
 
@@ -228,10 +262,18 @@ def test_chat_completions_streaming(mocker):
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200
     assert "text/event-stream" in response.headers.get("content-type", "")
-    # Response body must contain SSE data lines and terminator
+    
     body = response.text
+    # Response body must contain SSE data lines and terminator
     assert "data:" in body
     assert "[DONE]" in body
+    
+    # We should see content parsed out
+    assert 'Hello' in body
+    
+    # We should see tool call parsed out
+    assert 'tool_calls' in body
+    assert 'foo' in body
 
 
 def test_chat_completions_custom_params(mocker):
