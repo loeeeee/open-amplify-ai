@@ -1453,6 +1453,6 @@ def run() -> None:
       AMPLIFY_SERVER_PORT  - defaults to 8000
     """
     host = os.getenv("AMPLIFY_SERVER_HOST", "0.0.0.0")
-    port = int(os.getenv("AMPLIFY_SERVER_PORT", "8000"))
+    port = int(os.getenv("AMPLIFY_SERVER_PORT", "8080"))
     logger.info("Starting server on %s:%d", host, port)
     uvicorn.run("open_amplify_ai.server:app", host=host, port=port, reload=False)
