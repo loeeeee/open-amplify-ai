@@ -1,5 +1,7 @@
 # Amplify AI Compatibility Layer
 
+![Build](https://github.com/loeeeee/amplify-ai/actions/workflows/build.yml/badge.svg)
+
 This project provides an OpenAI-compatible wrapper for the Amplify AI API used at Vanderbilt University.
 
 ## OpenAI Compatible Server
@@ -73,7 +75,7 @@ To develop or run the application:
 ### Running Tests
 To run the mock-based unit tests for the server:
 ```bash
-uv run pytest src/amplify_ai/test_server.py
+uv run pytest src/open_amplify_ai/test_server.py
 ```
 
 ### API Prober

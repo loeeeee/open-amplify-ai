@@ -2,7 +2,7 @@ import io
 import pytest
 import os
 from fastapi.testclient import TestClient
-from amplify_ai.server import app
+from open_amplify_ai.server import app
 
 # Set up dummy environment variable for tests to bypass token validation failure
 os.environ["AMPLIFY_AI_TOKEN"] = "test-token-123"
@@ -27,7 +27,7 @@ def test_get_models_success(mocker):
             ]
         },
     }
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/models")
     assert response.status_code == 200
@@ -45,7 +45,7 @@ def test_get_models_amplify_failure(mocker):
     mock_response = mocker.Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {"success": False, "error": "Some error"}
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/models")
     assert response.status_code == 500
@@ -65,7 +65,7 @@ def test_get_model_by_id_success(mocker):
             ]
         },
     }
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/models/gpt-4o")
     assert response.status_code == 200
@@ -84,7 +84,7 @@ def test_get_model_by_id_not_found(mocker):
         "success": True,
         "data": {"models": [{"id": "gpt-4o"}]},
     }
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/models/nonexistent-model")
     assert response.status_code == 404
@@ -109,7 +109,7 @@ def test_chat_completions_success(mocker):
         "success": True,
         "data": "This is a mocked response from Amplify.",
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     req_body = {
         "model": "gpt-4o",
@@ -144,7 +144,7 @@ def test_chat_completions_streaming(mocker):
     mock_cm.iter_lines = mocker.Mock(
         return_value=[b"data: Hello", b"data: world"]
     )
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_cm)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_cm)
 
     req_body = {
         "model": "gpt-4o",
@@ -171,7 +171,7 @@ def test_chat_completions_custom_params(mocker):
         mock.json.return_value = {"success": True, "data": "ok"}
         return mock
 
-    mocker.patch("amplify_ai.server.requests.post", side_effect=fake_post)
+    mocker.patch("open_amplify_ai.server.requests.post", side_effect=fake_post)
 
     req_body = {
         "model": "claude-3",
@@ -211,7 +211,7 @@ def test_list_files_success(mocker):
             "pageKey": None,
         },
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.get("/v1/files")
     assert response.status_code == 200
@@ -233,7 +233,7 @@ def test_list_files_empty(mocker):
         "success": True,
         "data": {"items": [], "pageKey": None},
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.get("/v1/files")
     assert response.status_code == 200
@@ -262,7 +262,7 @@ def test_retrieve_file_success(mocker):
             "pageKey": None,
         },
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.get("/v1/files/user@vu.edu/2024-01-01/abc.json")
     assert response.status_code == 200
@@ -281,7 +281,7 @@ def test_retrieve_file_not_found(mocker):
         "success": True,
         "data": {"items": [], "pageKey": None},
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.get("/v1/files/nonexistent-file-id")
     assert response.status_code == 404
@@ -303,8 +303,8 @@ def test_upload_file_success(mocker):
     s3_mock = mocker.Mock()
     s3_mock.raise_for_status = mocker.Mock()
 
-    post_mock = mocker.patch("amplify_ai.server.requests.post", return_value=init_mock)
-    put_mock = mocker.patch("amplify_ai.server.requests.put", return_value=s3_mock)
+    post_mock = mocker.patch("open_amplify_ai.server.requests.post", return_value=init_mock)
+    put_mock = mocker.patch("open_amplify_ai.server.requests.put", return_value=s3_mock)
 
     response = client.post(
         "/v1/files",
@@ -328,7 +328,7 @@ def test_upload_file_init_failure(mocker):
     init_mock = mocker.Mock()
     init_mock.raise_for_status = mocker.Mock()
     init_mock.json.return_value = {"success": False, "error": "storage full"}
-    mocker.patch("amplify_ai.server.requests.post", return_value=init_mock)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=init_mock)
 
     response = client.post(
         "/v1/files",
@@ -342,7 +342,7 @@ def test_delete_file_success(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True}
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.delete("/v1/files/user@vu.edu/2024-01-01/abc.json")
     assert response.status_code == 200
@@ -360,13 +360,13 @@ def test_retrieve_file_content_success(mocker):
         "success": True,
         "downloadUrl": "https://s3.example.com/file.png",
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=api_mock)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=api_mock)
 
     content_mock = mocker.Mock()
     content_mock.raise_for_status = mocker.Mock()
     content_mock.content = b"\x89PNG\r\n"
     content_mock.headers = {"Content-Type": "image/png"}
-    mocker.patch("amplify_ai.server.requests.get", return_value=content_mock)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=content_mock)
 
     response = client.get("/v1/files/user@vu.edu/ast/file.png/content")
     assert response.status_code == 200
@@ -378,7 +378,7 @@ def test_retrieve_file_content_not_found(mocker):
     api_mock = mocker.Mock()
     api_mock.raise_for_status = mocker.Mock()
     api_mock.json.return_value = {"success": False, "message": "File not found"}
-    mocker.patch("amplify_ai.server.requests.post", return_value=api_mock)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=api_mock)
 
     response = client.get("/v1/files/nonexistent/content")
     assert response.status_code == 404
@@ -406,7 +406,7 @@ def test_list_assistants_success(mocker):
             }
         ],
     }
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/assistants")
     assert response.status_code == 200
@@ -425,7 +425,7 @@ def test_list_assistants_empty(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "data": []}
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/assistants")
     assert response.status_code == 200
@@ -449,7 +449,7 @@ def test_create_assistant_success(mocker):
             "version": 1,
         },
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     req_body = {
         "model": "gpt-4o",
@@ -488,7 +488,7 @@ def test_retrieve_assistant_success(mocker):
             },
         ],
     }
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/assistants/astp/abc123")
     assert response.status_code == 200
@@ -503,7 +503,7 @@ def test_retrieve_assistant_not_found(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "data": []}
-    mocker.patch("amplify_ai.server.requests.get", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=mock_response)
 
     response = client.get("/v1/assistants/astp/nonexistent")
     assert response.status_code == 404
@@ -520,7 +520,7 @@ def test_modify_assistant_success(mocker):
         m.json.return_value = {"success": True, "data": {"assistantId": "astp/abc123"}}
         return m
 
-    mocker.patch("amplify_ai.server.requests.post", side_effect=fake_post)
+    mocker.patch("open_amplify_ai.server.requests.post", side_effect=fake_post)
 
     req_body = {"name": "Updated Name", "instructions": "New instructions"}
     response = client.post("/v1/assistants/astp/abc123", json=req_body)
@@ -540,7 +540,7 @@ def test_delete_assistant_success(mocker):
         "success": True,
         "message": "Assistant deleted successfully.",
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.delete("/v1/assistants/astp/abc123")
     assert response.status_code == 200
@@ -558,7 +558,7 @@ def test_delete_assistant_amplify_failure(mocker):
         "success": False,
         "message": "You are not authorized to delete this assistant.",
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.delete("/v1/assistants/astp/other123")
     assert response.status_code == 200
@@ -577,7 +577,7 @@ def test_delete_thread_success(mocker):
     mock_response.status_code = 200
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "message": "Thread deleted successfully"}
-    mocker.patch("amplify_ai.server.requests.delete", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.delete", return_value=mock_response)
 
     response = client.delete("/v1/threads/thread-abc123")
     assert response.status_code == 200
@@ -592,7 +592,7 @@ def test_delete_thread_with_slash_id(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True}
-    mocker.patch("amplify_ai.server.requests.delete", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.delete", return_value=mock_response)
 
     response = client.delete("/v1/threads/user@vu.edu/thr/abc-123")
     assert response.status_code == 200
@@ -611,7 +611,7 @@ def test_create_vector_store_success(mocker):
     mock_response.status_code = 200
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "message": "Tags added successfully"}
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.post("/v1/vector_stores", json={"name": "my-store"})
     assert response.status_code == 200
@@ -645,8 +645,8 @@ def test_retrieve_vector_store_success(mocker):
         },
     }
 
-    mocker.patch("amplify_ai.server.requests.get", return_value=tags_mock)
-    mocker.patch("amplify_ai.server.requests.post", return_value=files_mock)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=tags_mock)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=files_mock)
 
     response = client.get("/v1/vector_stores/my-store")
     assert response.status_code == 200
@@ -665,7 +665,7 @@ def test_retrieve_vector_store_not_found(mocker):
         "success": True,
         "data": {"tags": ["other-tag"]},
     }
-    mocker.patch("amplify_ai.server.requests.get", return_value=tags_mock)
+    mocker.patch("open_amplify_ai.server.requests.get", return_value=tags_mock)
 
     response = client.get("/v1/vector_stores/nonexistent-store")
     assert response.status_code == 404
@@ -677,7 +677,7 @@ def test_delete_vector_store_success(mocker):
     mock_response.status_code = 200
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "message": "Tag deleted successfully"}
-    mocker.patch("amplify_ai.server.requests.post", return_value=mock_response)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=mock_response)
 
     response = client.delete("/v1/vector_stores/my-store")
     assert response.status_code == 200
@@ -701,7 +701,7 @@ def test_list_vector_store_files_success(mocker):
             "pageKey": None,
         },
     }
-    mocker.patch("amplify_ai.server.requests.post", return_value=files_mock)
+    mocker.patch("open_amplify_ai.server.requests.post", return_value=files_mock)
 
     response = client.get("/v1/vector_stores/my-store/files")
     assert response.status_code == 200
@@ -724,7 +724,7 @@ def test_add_file_to_vector_store_success(mocker):
         m.json.return_value = {"success": True, "message": "Tags updated and added to user"}
         return m
 
-    mocker.patch("amplify_ai.server.requests.post", side_effect=fake_post)
+    mocker.patch("open_amplify_ai.server.requests.post", side_effect=fake_post)
 
     req_body = {"file_id": "user@vu.edu/2024-01-01/abc.json"}
     response = client.post("/v1/vector_stores/my-store/files", json=req_body)

@@ -1,5 +1,5 @@
 [project]
-name = "OpenAmplifyAI"
+name = "open-amplify-ai"
 version = "0.0.1"
 description = "OpenAI-compatible wrapper for Amplify AI API"
 readme = "README.md"
@@ -19,11 +19,12 @@ dependencies = [
 
 
 [project.scripts]
-amplify = "amplify_ai.cli:main"
+amplify = "open_amplify_ai.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.10.2,<0.11.0"]
 build-backend = "uv_build"
+
 
 [dependency-groups]
 dev = [
