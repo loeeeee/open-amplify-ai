@@ -18,7 +18,12 @@ python3Packages.buildPythonPackage rec {
 
   # Build from the project root (two levels up from this file).
   # When imported via callPackage the src must point to the repository root.
-  src = ./..;
+  src = lib.cleanSourceWith {
+    src = ./..;
+    filter = path: type:
+      let baseName = baseNameOf (toString path);
+      in baseName != ".venv" && baseName != "result";
+  };
 
   nativeBuildInputs = [
     python3Packages.uv-build
