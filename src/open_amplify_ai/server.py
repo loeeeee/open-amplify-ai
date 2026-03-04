@@ -525,6 +525,7 @@ async def create_chat_completion(
         "data": {
             "temperature": chat_request.temperature,
             "max_tokens": chat_request.max_tokens,
+            "dataSources": [],
             "messages": [{"role": m.role, "content": m.content} for m in chat_request.messages],
             "options": {
                 "model": {"id": chat_request.model},
