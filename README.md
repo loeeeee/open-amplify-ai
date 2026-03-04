@@ -23,7 +23,7 @@ The server will bind to `http://0.0.0.0:8080` by default.
 * `DELETE /v1/models/{model}` — returns 405 (Amplify does not support model deletion)
 
 #### Chat Completions
-* `POST /v1/chat/completions` — supports streaming (SSE) and non-streaming responses
+* `POST /v1/chat/completions` — supports streaming (SSE) and non-streaming responses, fully compatible with AI coding tools like cline and openclaw.
 
 #### Files
 * `GET /v1/files` — list all uploaded files
