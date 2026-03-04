@@ -1,0 +1,33 @@
+[project]
+name = "OpenAmplifyAI"
+version = "0.0.1"
+description = "OpenAI-compatible wrapper for Amplify AI API"
+readme = "README.md"
+authors = [
+    { name = "loeeeee", email = "95266635+loeeeee@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "tqdm>=4.67.3",
+    "pypdf>=5.1.0",
+    "python-multipart>=0.0.12",
+]
+
+
+[project.scripts]
+amplify = "amplify_ai.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.2",
+    "pytest-mock>=3.15.1",
+]
