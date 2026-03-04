@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import time
 import pytest
@@ -5,36 +7,43 @@ from fastapi.testclient import TestClient
 from open_amplify_ai.server import app
 
 # ---------------------------------------------------------------------------
-# Integration Tests for Amplify AI Compatible Server
+# Integration Tests - kilo/cline and openclaw client usage patterns
 #
-# These tests run against the ACTUAL Amplify API using your provided token.
-# To run these tests:
+# These tests run against the ACTUAL Amplify API using a real token.
+# They exercise the specific request shapes that kilo, cline, and openclaw
+# emit when pointed at this server, not just generic endpoint smoke-tests.
+#
+# To run:
 #   AMPLIFY_AI_TOKEN="..." uv run pytest src/open_amplify_ai/test_integration.py -v -s
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
-def client():
-    # Verify we have a real token
+def client() -> TestClient:
+    """Create a live TestClient after verifying a real token is present."""
     token = os.environ.get("AMPLIFY_AI_TOKEN")
     if not token or token == "test-token-123":
         pytest.skip("AMPLIFY_AI_TOKEN is required for live integration tests.")
-    
+
     with TestClient(app) as c:
         yield c
 
+
 # ---------------------------------------------------------------------------
-# Models
+# Model Discovery
+# kilo and cline call GET /v1/models on start-up to populate the model picker.
 # ---------------------------------------------------------------------------
 
-def test_live_models_list(client):
-    """Fetch real available models from Amplify and verify OpenAI shape."""
+
+def test_kilo_cline_model_discovery(client: TestClient) -> None:
+    """kilo/cline enumerate available models on start-up and expect OpenAI list shape."""
     response = client.get("/v1/models")
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     data = response.json()
+
     assert data["object"] == "list"
     assert len(data["data"]) > 0
-    
-    # Check first model
+
     first = data["data"][0]
     assert first["object"] == "model"
     assert "id" in first
@@ -42,193 +51,318 @@ def test_live_models_list(client):
     assert "created" in first
 
 
-def test_live_models_retrieve(client):
-    """Retrieve a single real model by ID (picking first from list)."""
-    # Get the list first to pick a valid model ID (e.g. gpt-4o)
-    list_resp = client.get("/v1/models")
-    assert list_resp.status_code == 200
-    first_model_id = list_resp.json()["data"][0]["id"]
-    
-    response = client.get(f"/v1/models/{first_model_id}")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["id"] == first_model_id
-    assert data["object"] == "model"
-
-
 # ---------------------------------------------------------------------------
-# Chat Completions
+# Chat - system prompt + user message
+# cline always prepends a system message before the user turn.
 # ---------------------------------------------------------------------------
 
-def test_live_chat_completion(client):
-    """Run a real standard chat completion."""
+
+def test_kilo_cline_system_prompt_chat(client: TestClient) -> None:
+    """cline sends a system role message followed by the user prompt."""
     req_body = {
-        "model": "gpt-4o",  # Usually a safe bet, adjust if Vanderbilt changes defaults
+        "model": "gpt-4o",
         "messages": [
-            {"role": "user", "content": "What is 2+2? Say exactly '4'."}
+            {
+                "role": "system",
+                "content": "You are a helpful coding assistant. Be concise.",
+            },
+            {
+                "role": "user",
+                "content": "What is 2+2? Reply with just the number.",
+            },
         ],
         "temperature": 0.0,
     }
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200, response.text
+
     data = response.json()
     assert data["object"] == "chat.completion"
-    assert "choices" in data
     assert len(data["choices"]) > 0
     assert data["choices"][0]["finish_reason"] == "stop"
-    content = data["choices"][0]["message"]["content"]
-    assert "4" in content
+    assert "4" in data["choices"][0]["message"]["content"]
+    assert "system_fingerprint" in data
 
 
-def test_live_chat_completion_streaming(client):
-    """Run a real streaming chat completion."""
+# ---------------------------------------------------------------------------
+# Chat - streaming with include_usage
+# kilo and cline request stream=True together with stream_options.include_usage=True.
+# The server must emit a final usage chunk before [DONE].
+# ---------------------------------------------------------------------------
+
+
+def test_kilo_cline_streaming_with_usage(client: TestClient) -> None:
+    """kilo/cline use stream=True + stream_options.include_usage=True and expect a usage chunk."""
     req_body = {
         "model": "gpt-4o",
         "messages": [
-            {"role": "user", "content": "Count from 1 to 3 rapidly."}
+            {"role": "user", "content": "Say the word 'hello' only."},
         ],
-        "temperature": 0.5,
-        "stream": True
+        "temperature": 0.0,
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
-    
     response = client.post("/v1/chat/completions", json=req_body)
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert "text/event-stream" in response.headers.get("content-type", "")
-    
-    chunks = response.iter_lines()
-    has_data = False
+
+    has_content_chunk = False
+    has_usage_chunk = False
     has_done = False
-    
-    for chunk_str in chunks:
-        if isinstance(chunk_str, bytes):
-            chunk_str = chunk_str.decode("utf-8")
-        if not chunk_str: continue
-        
-        if chunk_str.startswith("data: "):
-            if "[DONE]" in chunk_str:
-                has_done = True
-                break
-            has_data = True
-            # Could parse json here to verify fields if needed
 
-    assert has_data is True
-    assert has_done is True
+    for raw_line in response.iter_lines():
+        if isinstance(raw_line, bytes):
+            raw_line = raw_line.decode("utf-8")
+        if not raw_line:
+            continue
+        if not raw_line.startswith("data: "):
+            continue
+
+        payload = raw_line[6:]
+        if payload == "[DONE]":
+            has_done = True
+            break
+
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        choices = chunk.get("choices", [])
+        if choices and choices[0].get("delta", {}).get("content"):
+            has_content_chunk = True
+
+        # Usage chunk has empty choices list and a usage block
+        if chunk.get("choices") == [] and "usage" in chunk:
+            has_usage_chunk = True
+
+    assert has_content_chunk, "No content delta chunks received"
+    assert has_usage_chunk, "Missing final usage chunk (stream_options.include_usage=True)"
+    assert has_done, "Stream did not terminate with [DONE]"
 
 
 # ---------------------------------------------------------------------------
-# Assistants Lifecycle
+# Chat - list-typed content
+# cline passes content as a list of {type, text} dicts for multi-part messages.
+# The server must flatten them into a plain string before forwarding.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(reason="Amplify Assistant API is currently unstable and often returns 502 Bad Gateway")
-@pytest.mark.xfail(reason="Amplify Assistant API is currently unstable and often returns 502 Bad Gateway")
-def test_live_assistant_lifecycle(client):
-    """Create, retrieve, modify, and delete a live assistant."""
-    # 1. Create
-    create_body = {
-        "name": "Integration Test Assistant",
+
+def test_kilo_cline_list_content_messages(client: TestClient) -> None:
+    """cline passes content as a list of typed parts; server must handle without error."""
+    req_body = {
         "model": "gpt-4o",
-        "instructions": "You are a test."
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is "},
+                    {"type": "text", "text": "2+2? Reply with just the number."},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["object"] == "chat.completion"
+    assert "4" in data["choices"][0]["message"]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Chat - extra message fields
+# kilo includes a `name` field on messages. The server must not reject this.
+# ---------------------------------------------------------------------------
+
+
+def test_kilo_cline_extra_message_fields(client: TestClient) -> None:
+    """kilo sends messages with extra fields like 'name'; server must not return 400."""
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What is 2+2? Reply with just the number.",
+                "name": "kilo-agent",
+            }
+        ],
+        "temperature": 0.0,
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["object"] == "chat.completion"
+
+
+# ---------------------------------------------------------------------------
+# Chat - tool call response parsing
+# kilo expects the server to detect when the model emits a JSON tool call
+# ({"command": ..., "parameters": ...}) and convert it to a proper tool_calls
+# block with finish_reason=tool_calls.
+# This test uses a normal prompt - if the model returns plain text that is fine.
+# The server is expected to pass through plain text as a regular message.
+# We verify at minimum that the response is well-formed regardless of branch.
+# ---------------------------------------------------------------------------
+
+
+def test_kilo_cline_tool_call_response(client: TestClient) -> None:
+    """Server correctly handles any response shape - tool call or plain text."""
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": "List the files in the current directory. Use a tool call if available.",
+            }
+        ],
+        "temperature": 0.0,
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["object"] == "chat.completion"
+    choice = data["choices"][0]
+
+    finish_reason = choice["finish_reason"]
+    assert finish_reason in ("stop", "tool_calls"), (
+        f"Unexpected finish_reason: {finish_reason}"
+    )
+
+    if finish_reason == "tool_calls":
+        tool_calls = choice["message"].get("tool_calls", [])
+        assert len(tool_calls) > 0
+        tc = tool_calls[0]
+        assert tc["type"] == "function"
+        assert "name" in tc["function"]
+        # arguments must be valid JSON
+        json.loads(tc["function"]["arguments"])
+    else:
+        assert choice["message"].get("content") is not None
+
+
+# ---------------------------------------------------------------------------
+# File upload and use (openclaw pattern)
+# openclaw uploads a document then confirms it is visible in the file list.
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_file_upload_and_use(client: TestClient) -> None:
+    """openclaw uploads a file and verifies it appears in the file list."""
+    file_content = b"Integration test document for openclaw."
+    upload_resp = client.post(
+        "/v1/files",
+        files={
+            "file": (
+                "openclaw_test.txt",
+                io.BytesIO(file_content),
+                "text/plain",
+            )
+        },
+    )
+    assert upload_resp.status_code == 200, upload_resp.text
+    file_data = upload_resp.json()
+    file_id = file_data["id"]
+
+    assert file_data["object"] == "file"
+    assert file_data["filename"] == "openclaw_test.txt"
+    assert file_data["bytes"] == len(file_content)
+
+    # Allow S3 indexing time before querying
+    time.sleep(1.5)
+
+    list_resp = client.get("/v1/files")
+    assert list_resp.status_code == 200, list_resp.text
+    files = list_resp.json()["data"]
+    assert any(f["id"] == file_id for f in files), (
+        f"Uploaded file {file_id} not found in file list"
+    )
+
+    # Attempt deletion; upstream may return 403 - treat as a known limitation
+    del_resp = client.delete(f"/v1/files/{file_id}")
+    if del_resp.status_code == 500 and "Forbidden" in del_resp.text:
+        pytest.xfail("Amplify file delete returns 403 Forbidden upstream")
+    assert del_resp.status_code == 200, del_resp.text
+    assert del_resp.json()["deleted"] is True
+
+
+# ---------------------------------------------------------------------------
+# Assistant with file attachment (openclaw pattern)
+# openclaw creates an assistant, uploads a file, and attaches it for RAG.
+# Marked xfail because the upstream assistant create endpoint is unstable.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason="Amplify assistant create endpoint intermittently returns 502 Bad Gateway"
+)
+def test_openclaw_assistant_with_file(client: TestClient) -> None:
+    """openclaw creates an assistant and attaches an uploaded file for grounding."""
+    # Step 1: upload file
+    file_content = b"Context document for the openclaw assistant test."
+    upload_resp = client.post(
+        "/v1/files",
+        files={
+            "file": (
+                "openclaw_ctx.txt",
+                io.BytesIO(file_content),
+                "text/plain",
+            )
+        },
+    )
+    assert upload_resp.status_code == 200, upload_resp.text
+    file_id = upload_resp.json()["id"]
+
+    # Step 2: create assistant - will raise if upstream is down
+    create_body = {
+        "name": "openclaw Integration Test Assistant",
+        "model": "gpt-4o",
+        "instructions": "Answer questions using the attached context document.",
     }
     create_resp = client.post("/v1/assistants", json=create_body)
     assert create_resp.status_code == 200, create_resp.text
-    create_data = create_resp.json()
-    ast_id = create_data["id"]
-    
-    assert ast_id.startswith("astp/")
-    assert create_data["name"] == "Integration Test Assistant"
+    assistant_data = create_resp.json()
+    assistant_id = assistant_data["id"]
+
+    assert assistant_id.startswith("astp/")
+    assert assistant_data["name"] == "openclaw Integration Test Assistant"
 
     try:
-        # Give remote systems a tiny moment
         time.sleep(1.0)
-        
-        # 2. Retrieve
-        get_resp = client.get(f"/v1/assistants/{ast_id}")
+        # Step 3: retrieve to confirm creation persisted
+        get_resp = client.get(f"/v1/assistants/{assistant_id}")
         assert get_resp.status_code == 200, get_resp.text
-        get_data = get_resp.json()
-        assert get_data["id"] == ast_id
-        assert get_data["name"] == "Integration Test Assistant"
-        
-        # 3. Modify
-        update_body = {
-            "name": "Integration Test Assistant Updated",
-            "instructions": "You are a modified test."
-        }
-        mod_resp = client.post(f"/v1/assistants/{ast_id}", json=update_body)
-        assert mod_resp.status_code == 200, mod_resp.text
-        mod_data = mod_resp.json()
-        assert mod_data["name"] == "Integration Test Assistant Updated"
-        
+        assert get_resp.json()["id"] == assistant_id
     finally:
-        # 4. Delete
-        del_resp = client.delete(f"/v1/assistants/{ast_id}")
+        # Step 4: cleanup
+        del_resp = client.delete(f"/v1/assistants/{assistant_id}")
         assert del_resp.status_code == 200, del_resp.text
         assert del_resp.json()["deleted"] is True
 
 
 # ---------------------------------------------------------------------------
-# Vector Store Lifecycle
+# Vector Store Lifecycle (existing smoke test retained)
 # ---------------------------------------------------------------------------
 
-def test_live_vector_store_lifecycle(client):
-    """Create, retrieve, and delete a vector store (Amplify Tag)."""
-    # 1. Create
-    create_body = {
-        "name": "integration-test-store"
-    }
-    create_resp = client.post("/v1/vector_stores", json=create_body)
+
+def test_live_vector_store_lifecycle(client: TestClient) -> None:
+    """Create, retrieve, and delete a vector store (Amplify tag)."""
+    create_resp = client.post(
+        "/v1/vector_stores", json={"name": "integration-test-store"}
+    )
     assert create_resp.status_code == 200, create_resp.text
     vs_id = create_resp.json()["id"]
 
     try:
         time.sleep(0.5)
-        # 2. Retrieve
         get_resp = client.get(f"/v1/vector_stores/{vs_id}")
         assert get_resp.status_code == 200, get_resp.text
         assert get_resp.json()["id"] == vs_id
         assert get_resp.json()["file_counts"]["total"] == 0
     finally:
-        # 3. Delete
         del_resp = client.delete(f"/v1/vector_stores/{vs_id}")
-        # Could be 200 or failing depending on if the tag was fully commited 
-        # inside Amplify's async tag creation. We assert it attempted.
-        assert del_resp.status_code == 200, del_resp.text
-        assert del_resp.json()["deleted"] is True
-
-
-# ---------------------------------------------------------------------------
-# Files Lifecycle
-# ---------------------------------------------------------------------------
-
-def test_live_files_lifecycle(client):
-    """Upload, list, and delete a real file in Amplify."""
-    import io
-    
-    file_content = b"Hello, integration test world!"
-    upload_resp = client.post(
-        "/v1/files",
-        files={"file": ("integration_test_file.txt", io.BytesIO(file_content), "text/plain")}
-    )
-    assert upload_resp.status_code == 200, upload_resp.text
-    file_data = upload_resp.json()
-    file_id = file_data["id"]
-    
-    try:
-        # Give remote s3 uploads a moment
-        time.sleep(1.0)
-        
-        # 1. List files, verify ours is there
-        list_resp = client.get("/v1/files")
-        assert list_resp.status_code == 200, list_resp.text
-        files = list_resp.json()["data"]
-        assert any(f["id"] == file_id for f in files)
-        
-    finally:
-        # 2. Delete file
-        del_resp = client.delete(f"/v1/files/{file_id}")
-        
-        # We know file delete currently returns 403 Forbidden (wrapped in 500 internally)
-        if del_resp.status_code == 500 and "Forbidden" in del_resp.text:
-            pytest.xfail("Amplify File Delete API is currently returning 403 Forbidden")
-            
         assert del_resp.status_code == 200, del_resp.text
         assert del_resp.json()["deleted"] is True

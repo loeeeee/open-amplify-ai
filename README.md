@@ -77,10 +77,18 @@ To develop or run the application:
 > - `AMPLIFY_AI_EMAIL` — your Vanderbilt email address (used to construct request payloads)
 
 ### Running Tests
-To run the mock-based unit tests for the server:
+
+Run the mock-based unit tests (no token required):
 ```bash
-uv run pytest src/open_amplify_ai/test_server.py
+uv run pytest src/open_amplify_ai/test_server.py -v
 ```
+
+Run the live integration tests against the real Amplify API (token required).
+These tests replicate the actual request patterns that kilo, cline, and openclaw use:
+```bash
+AMPLIFY_AI_TOKEN="..." uv run pytest src/open_amplify_ai/test_integration.py -v -s
+```
+The token is read from `.env` automatically if present via `python-dotenv`.
 
 ### API Prober
 To probe all documented endpoints (including conflict variants), run:
