@@ -535,6 +535,13 @@ async def create_chat_completion(
         parsed_messages = []
         for m in req_json.get("messages", []):
             role = m.get("role", "user")
+            # OpenAI o-series models use "developer" instead of "system".
+            # Amplify AI only recognises "system", so remap it.
+            if role == "developer":
+                role = "system"
+            elif role == "tool":
+                role = "user"
+
             content_raw = m.get("content", "")
             if isinstance(content_raw, list):
                 content_text = ""
@@ -545,7 +552,20 @@ async def create_chat_completion(
                         content_text += part
                 content = content_text
             else:
-                content = str(content_raw)
+                content = str(content_raw) if content_raw is not None else ""
+
+            orig_role = m.get("role", "")
+            if orig_role == "tool":
+                name = m.get("name", "unknown")
+                content = f"[Tool Result: {name}]\n{content}"
+            elif orig_role == "assistant" and "tool_calls" in m:
+                calls_str = ""
+                for tc in m.get("tool_calls", []):
+                    if tc.get("type") == "function":
+                        func = tc.get("function", {})
+                        calls_str += f"\n[Tool Call: {func.get('name')}]\nParameters: {func.get('arguments')}\n"
+                content += calls_str
+
             parsed_messages.append(ChatMessage(role=role, content=content))
             
         chat_request = ChatCompletionRequest(
