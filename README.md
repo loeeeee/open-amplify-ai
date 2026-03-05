@@ -10,7 +10,7 @@ We have added an OpenAI-compatible API layer that translates requests to the Amp
 
 ### Documentation
 - [Amplify to OpenAI Response Mapping](docs/amplify_to_openai_response_mapping.md) — Details how responses and tool calls are parsed from the Amplify backend.
-- [Request Error Logging](docs-vibe/36_request_error_logging_report.md) — Details on how bad requests to the server are logged with their payload bodies.
+- [Request Error Logging](docs-vibe/40_error_logging_fix_report.md) — Details on how bad requests to the server are logged with their request and response payloads.
 
 ### Running the server
 You can start the server locally by running:
