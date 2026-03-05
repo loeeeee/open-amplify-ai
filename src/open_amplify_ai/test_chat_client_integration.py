@@ -324,7 +324,7 @@ def test_client_streaming_with_usage(mocker: Any) -> None:
 
 def test_client_tool_call_detection(mocker: Any) -> None:
     """Server detects JSON tool call in response and converts to tool_calls block."""
-    tool_response = '{"command":"list_files","parameters":{"path":"/home","recursive":true}}'
+    tool_response = '{"tool":"list_files","parameters":{"path":"/home","recursive":true}}'
     mocker.patch(
         "open_amplify_ai.routers.chat.requests.post",
         return_value=_make_amplify_chat_response(tool_response),
@@ -362,7 +362,7 @@ def test_client_tool_call_detection(mocker: Any) -> None:
 
 def test_client_streaming_tool_call(mocker: Any) -> None:
     """Server detects JSON tool call in streaming response and emits tool_calls chunk."""
-    tool_json = '{"command":"read_file","parameters":{"path":"/tmp/test.txt"}}'
+    tool_json = '{"tool":"read_file","parameters":{"path":"/tmp/test.txt"}}'
     stream_lines = [
         f'data: {{"data":"{tool_json.replace(chr(34), chr(92)+chr(34))}"}}'.encode(),
         b"data: [DONE]",

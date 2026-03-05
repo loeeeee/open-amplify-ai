@@ -178,30 +178,32 @@ def stream_amplify_chat(
                 parsed_content_delta = None
                 
                 # Check if it looks like a complete JSON tool call
-                if isinstance(content_delta, str) and content_delta.strip().startswith('{"command"'):
+                if isinstance(content_delta, str) and (content_delta.strip().startswith('{"command"') or content_delta.strip().startswith('{"tool"')):
                     try:
                         parsed_content = json.loads(content_delta)
-                        tool_calls = [
-                            {
-                                "index": 0,
-                                "id": f"call_{uuid.uuid4().hex[:12]}",
-                                "type": "function",
-                                "function": {
-                                    "name": parsed_content.get("command"),
-                                    "arguments": json.dumps(parsed_content.get("parameters", {}))
+                        name = parsed_content.get("tool") or parsed_content.get("command")
+                        if name:
+                            tool_calls = [
+                                {
+                                    "index": 0,
+                                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": json.dumps(parsed_content.get("parameters", {}))
+                                    }
                                 }
-                            }
-                        ]
-                        parsed_content_delta = None
+                            ]
+                            parsed_content_delta = None
+                        else:
+                            parsed_content_delta = content_delta
                     except json.JSONDecodeError:
                         parsed_content_delta = content_delta
                 else:
                     parsed_content_delta = content_delta
 
-                delta_obj = {"role": "assistant"}
-                if parsed_content_delta is not None:
-                    delta_obj["content"] = parsed_content_delta
-                elif tool_calls is not None:
+                delta_obj = {"role": "assistant", "content": parsed_content_delta}
+                if tool_calls is not None:
                     delta_obj["tool_calls"] = tool_calls
 
                 chunk = {
