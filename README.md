@@ -11,13 +11,17 @@ We have added an OpenAI-compatible API layer that translates requests to the Amp
 ### Documentation
 - [Amplify to OpenAI Response Mapping](docs/amplify_to_openai_response_mapping.md) — Details how responses and tool calls are parsed from the Amplify backend.
 - [Request Error Logging](docs-vibe/40_error_logging_fix_report.md) — Details on how bad requests to the server are logged with their request and response payloads.
+- [Server Port CLI Argument](docs-vibe/42_server_port_cli_argument.md) — Details on the implementation of the `--port` CLI argument.
 
 ### Running the server
 You can start the server locally by running:
 ```bash
 amplify server
 ```
-The server will bind to `http://0.0.0.0:8080` by default.
+The server will bind to `http://0.0.0.0:8080` by default. You can override the port by using the `--port` argument:
+```bash
+amplify server --port 9090
+```
 
 ### Endpoints Supported
 
@@ -70,8 +74,10 @@ To develop or run the application:
     nix-shell
     ```
 2. The shell will automatically create a `.venv` (if it doesn't exist) and activate it.
+    It will also provide a `start-server` command.
 3. Manage dependencies with `uv` (e.g., `uv add <package>`).
 4. Run scripts with standard Python natively since the `.venv` is loaded.
+5. Quickly start the local dev server by running `start-server`.
 
 > **Note:** Accessing the Amplify AI API requires an API token. Set the following in your `.env` file:
 > - `AMPLIFY_AI_TOKEN` — your API key (e.g., `amp-v1-...`)
