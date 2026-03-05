@@ -1,3 +1,4 @@
+from open_amplify_ai.utils import handle_upstream_error
 """Models endpoints mapped to the Amplify API."""
 import logging
 from typing import Any, Dict
@@ -41,8 +42,7 @@ async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str,
             ],
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error fetching models: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "fetching")
 
 
 @router.get("/{model}")
@@ -76,8 +76,7 @@ async def retrieve_model(model: str, headers: dict = Depends(get_amplify_headers
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error fetching model %s: %s", model, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "fetching")
 
 
 @router.delete("/{model}")

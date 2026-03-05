@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.types import AmplifyAssistantCreateRequest
-from open_amplify_ai.utils import amplify_assistant_to_openai
+from open_amplify_ai.utils import amplify_assistant_to_openai, handle_upstream_error
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,7 @@ async def list_assistants(headers: dict = Depends(get_amplify_headers)) -> Dict[
             "has_more": False,
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error listing assistants: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "listing")
 
 
 @router.post("")
@@ -88,8 +87,7 @@ async def create_assistant(
             "metadata": body.get("metadata", {}),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error creating assistant: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "creating")
 
 
 @router.get("/{assistant_id:path}")
@@ -117,8 +115,7 @@ async def retrieve_assistant(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving assistant %s: %s", assistant_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 @router.post("/{assistant_id:path}")
@@ -172,8 +169,7 @@ async def modify_assistant(
             "metadata": body.get("metadata", {}),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error modifying assistant %s: %s", assistant_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "modifying")
 
 
 @router.delete("/{assistant_id:path}")
@@ -198,5 +194,4 @@ async def delete_assistant(
             "deleted": bool(data.get("success", False)),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting assistant %s: %s", assistant_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")

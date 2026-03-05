@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.types import AmplifyTagsRequest
-from open_amplify_ai.utils import not_implemented, query_amplify_files
+from open_amplify_ai.utils import not_implemented, query_amplify_files, handle_upstream_error
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,7 @@ async def create_vector_store(
             "status": "completed",
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error creating vector store %s: %s", tag_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "creating")
 
 
 @router.get("/{vector_store_id}")
@@ -100,8 +99,7 @@ async def retrieve_vector_store(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving vector store %s: %s", vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 @router.post("/{vector_store_id}")
@@ -136,8 +134,7 @@ async def delete_vector_store(
             "deleted": bool(data.get("success", False)),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting vector store %s: %s", vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")
 
 
 @router.get("/{vector_store_id}/files")
@@ -161,8 +158,7 @@ async def list_vector_store_files(
         ]
         return {"object": "list", "data": data}
     except requests.exceptions.RequestException as e:
-        logger.error("Error listing vector store files for %s: %s", vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "listing")
 
 
 @router.post("/{vector_store_id}/files")
@@ -202,8 +198,7 @@ async def create_vector_store_file(
             "status": "completed",
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error adding file %s to vector store %s: %s", file_id, vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "adding")
 
 
 @router.delete("/{vector_store_id}/files/{file_id:path}")

@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.types import AmplifyFileUploadRequest, AmplifyKeyRequest
-from open_amplify_ai.utils import amplify_item_to_openai_file, query_amplify_files
+from open_amplify_ai.utils import amplify_item_to_openai_file, query_amplify_files, handle_upstream_error
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,7 @@ async def list_files(headers: dict = Depends(get_amplify_headers)) -> Dict[str, 
             "data": [amplify_item_to_openai_file(item) for item in items],
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error listing files: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "listing")
 
 
 @router.post("")
@@ -101,8 +100,7 @@ async def upload_file(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error uploading file: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "uploading")
 
 
 @router.get("/{file_id:path}/content")
@@ -140,8 +138,7 @@ async def retrieve_file_content(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving file content %s: %s", file_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 @router.get("/{file_id:path}")
@@ -161,8 +158,7 @@ async def retrieve_file(file_id: str, headers: dict = Depends(get_amplify_header
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving file %s: %s", file_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 
@@ -209,5 +205,4 @@ async def delete_file(file_id: str, headers: dict = Depends(get_amplify_headers)
             "deleted": deleted,
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting file %s: %s", file_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")

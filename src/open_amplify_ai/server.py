@@ -1,3 +1,4 @@
+from open_amplify_ai.utils import handle_upstream_error
 import base64
 import json
 import logging
@@ -466,8 +467,7 @@ async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str,
             ],
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error fetching models: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "fetching")
 
 
 @app.get("/v1/models/{model}")
@@ -501,8 +501,7 @@ async def retrieve_model(model: str, headers: dict = Depends(get_amplify_headers
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error fetching model %s: %s", model, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "fetching")
 
 
 @app.delete("/v1/models/{model}")
@@ -656,8 +655,7 @@ async def create_chat_completion(
             },
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error during chat completion: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "during")
 
 
 # ---------------------------------------------------------------------------
@@ -680,8 +678,7 @@ async def list_files(headers: dict = Depends(get_amplify_headers)) -> Dict[str, 
             "data": [amplify_item_to_openai_file(item) for item in items],
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error listing files: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "listing")
 
 
 @app.post("/v1/files")
@@ -747,8 +744,7 @@ async def upload_file(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error uploading file: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "uploading")
 
 
 @app.get("/v1/files/{file_id:path}/content")
@@ -786,8 +782,7 @@ async def retrieve_file_content(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving file content %s: %s", file_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 @app.get("/v1/files/{file_id:path}")
@@ -807,8 +802,7 @@ async def retrieve_file(file_id: str, headers: dict = Depends(get_amplify_header
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving file %s: %s", file_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 
@@ -855,8 +849,7 @@ async def delete_file(file_id: str, headers: dict = Depends(get_amplify_headers)
             "deleted": deleted,
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting file %s: %s", file_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")
 
 
 # ---------------------------------------------------------------------------
@@ -882,8 +875,7 @@ async def list_assistants(headers: dict = Depends(get_amplify_headers)) -> Dict[
             "has_more": False,
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error listing assistants: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "listing")
 
 
 @app.post("/v1/assistants")
@@ -936,8 +928,7 @@ async def create_assistant(
             "metadata": body.get("metadata", {}),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error creating assistant: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "creating")
 
 
 @app.get("/v1/assistants/{assistant_id:path}")
@@ -965,8 +956,7 @@ async def retrieve_assistant(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving assistant %s: %s", assistant_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 @app.post("/v1/assistants/{assistant_id:path}")
@@ -1020,8 +1010,7 @@ async def modify_assistant(
             "metadata": body.get("metadata", {}),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error modifying assistant %s: %s", assistant_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "modifying")
 
 
 @app.delete("/v1/assistants/{assistant_id:path}")
@@ -1046,8 +1035,7 @@ async def delete_assistant(
             "deleted": bool(data.get("success", False)),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting assistant %s: %s", assistant_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")
 
 
 # ---------------------------------------------------------------------------
@@ -1098,8 +1086,7 @@ async def delete_thread(
             "deleted": bool(data.get("success", False)),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting thread %s: %s", thread_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")
 
 
 # ---------------------------------------------------------------------------
@@ -1362,8 +1349,7 @@ async def create_vector_store(
             "status": "completed",
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error creating vector store %s: %s", tag_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "creating")
 
 
 @app.get("/v1/vector_stores/{vector_store_id}")
@@ -1407,8 +1393,7 @@ async def retrieve_vector_store(
     except HTTPException:
         raise
     except requests.exceptions.RequestException as e:
-        logger.error("Error retrieving vector store %s: %s", vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "retrieving")
 
 
 @app.post("/v1/vector_stores/{vector_store_id}")
@@ -1443,8 +1428,7 @@ async def delete_vector_store(
             "deleted": bool(data.get("success", False)),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting vector store %s: %s", vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")
 
 
 @app.get("/v1/vector_stores/{vector_store_id}/files")
@@ -1468,8 +1452,7 @@ async def list_vector_store_files(
         ]
         return {"object": "list", "data": data}
     except requests.exceptions.RequestException as e:
-        logger.error("Error listing vector store files for %s: %s", vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "listing")
 
 
 @app.post("/v1/vector_stores/{vector_store_id}/files")
@@ -1509,8 +1492,7 @@ async def create_vector_store_file(
             "status": "completed",
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error adding file %s to vector store %s: %s", file_id, vector_store_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "adding")
 
 
 @app.delete("/v1/vector_stores/{vector_store_id}/files/{file_id:path}")
