@@ -38,13 +38,18 @@ def main() -> None:
         default=None,
         help="Port to run the server on (default: 8080 or AMPLIFY_SERVER_PORT)"
     )
+    server_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode (logs all requests and responses)"
+    )
 
     args = parser.parse_args()
 
     if args.command == "probe":
         probe_api.main()
     elif args.command == "server":
-        server.run(port=args.port)
+        server.run(port=args.port, debug=args.debug)
     else:
         parser.print_help()
         sys.exit(1)

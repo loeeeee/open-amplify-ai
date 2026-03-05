@@ -1,4 +1,5 @@
 from open_amplify_ai.utils import handle_upstream_error
+from open_amplify_ai.middleware import ErrorLoggingMiddleware, DebugLoggingMiddleware
 import base64
 import json
 import logging
@@ -34,6 +35,12 @@ AMPLIFY_BASE_URL = "https://prod-api.vanderbilt.ai"
 
 app = FastAPI(title="Amplify AI OpenAI Compatible API")
 
+app.add_middleware(DebugLoggingMiddleware)
+app.add_middleware(ErrorLoggingMiddleware)
+
+if os.getenv("AMPLIFY_DEBUG", "0").lower() in ("1", "true", "yes"):
+    logger.setLevel(logging.DEBUG)
+    logging.getLogger("open_amplify_ai.middleware").setLevel(logging.DEBUG)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -1558,7 +1565,7 @@ async def list_files_in_vector_store_batch(vector_store_id: str, batch_id: str) 
 # ---------------------------------------------------------------------------
 
 
-def run(port: Optional[int] = None) -> None:
+def run(port: Optional[int] = None, debug: bool = False) -> None:
     """Start the Uvicorn server.
 
     Bind address and port are read from environment variables so that the
@@ -1568,6 +1575,11 @@ def run(port: Optional[int] = None) -> None:
       
     CLI argument for port overrides the environment variable.
     """
+    if debug:
+        os.environ["AMPLIFY_DEBUG"] = "1"
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger("open_amplify_ai.middleware").setLevel(logging.DEBUG)
+
     host = os.getenv("AMPLIFY_SERVER_HOST", "0.0.0.0")
     port = port or int(os.getenv("AMPLIFY_SERVER_PORT", "8080"))
     logger.info("Starting server on %s:%d", host, port)
