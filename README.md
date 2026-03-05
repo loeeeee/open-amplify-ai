@@ -12,6 +12,8 @@ We have added an OpenAI-compatible API layer that translates requests to the Amp
 - [Amplify to OpenAI Response Mapping](docs/amplify_to_openai_response_mapping.md) — Details how responses and tool calls are parsed from the Amplify backend.
 - [Request Error Logging](docs-vibe/40_error_logging_fix_report.md) — Details on how bad requests to the server are logged with their request and response payloads.
 - [Server Port CLI Argument](docs-vibe/42_server_port_cli_argument.md) — Details on the implementation of the `--port` CLI argument.
+- [Debug Mode Request/Response Logging](docs-vibe/45_debug_request_response_logging.md) — Details on how to enable debug mode to log all HTTP requests and responses.
+- [Kilo Client Tool Call Issue Analysis](docs-vibe/46_kilo_client_tool_call_issue_report.md) — Details on why the Kilo client has issues parsing tool calls from the API.
 
 ### Running the server
 You can start the server locally by running:
