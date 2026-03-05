@@ -56,6 +56,8 @@ Always print a concise report after script execution.
 
 Always write doc string for each function.
 
+Always add a test when user encountered an issue.
+
 ## Documentation
 
 Always document concise implementation details and basic usage in docs-vibe/ with a sequential file name.
