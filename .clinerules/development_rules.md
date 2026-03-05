@@ -56,7 +56,7 @@ Always print a concise report after script execution.
 
 Always write doc string for each function.
 
-Always add a test when user encountered an issue.
+Always add a test when user encountered a bug or issue.
 
 ## Documentation
 

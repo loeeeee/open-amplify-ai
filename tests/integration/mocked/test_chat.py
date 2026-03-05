@@ -355,6 +355,58 @@ def test_client_tool_call_detection(mocker: Any) -> None:
     assert choice["message"].get("content") is None
 
 
+def test_client_tool_call_detection_with_markdown_wrapper(mocker: Any) -> None:
+    """Server detects tool call even if the LLM wraps it in markdown code blocks."""
+    tool_response = 'Here is the tool you requested:\n```json\n{"tool":"list_files","parameters":{"path":"/home","recursive":true}}\n```\n'
+    mocker.patch(
+        "open_amplify_ai.routers.chat.requests.post",
+        return_value=_make_amplify_chat_response(tool_response),
+    )
+
+    response = client.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "List files in home dir"}],
+    })
+    assert response.status_code == 200
+
+    data = response.json()
+    choice = data["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+
+    tool_calls = choice["message"]["tool_calls"]
+    assert len(tool_calls) == 1
+    tc = tool_calls[0]
+    assert tc["type"] == "function"
+    assert tc["function"]["name"] == "list_files"
+
+
+def test_client_tool_call_detection_with_unescaped_newlines(mocker: Any) -> None:
+    """Server detects tool call when string literal contains unescaped newlines."""
+    # Note the literal newline character in the content string value
+    tool_response = '{"tool": "write_to_file", "parameters": {"path": "/tmp/test.txt", "content": "line1\nline2\nline3"}}'
+    mocker.patch(
+        "open_amplify_ai.routers.chat.requests.post",
+        return_value=_make_amplify_chat_response(tool_response),
+    )
+
+    response = client.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Write this file"}],
+    })
+    assert response.status_code == 200
+
+    data = response.json()
+    choice = data["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+
+    tool_calls = choice["message"]["tool_calls"]
+    assert len(tool_calls) == 1
+    tc = tool_calls[0]
+    assert tc["function"]["name"] == "write_to_file"
+    args = json.loads(tc["function"]["arguments"])
+    assert "line1\nline2" in args["content"]
+
+
 # ---------------------------------------------------------------------------
 # 9. Streaming tool call - tool call detection in streaming mode
 # ---------------------------------------------------------------------------
