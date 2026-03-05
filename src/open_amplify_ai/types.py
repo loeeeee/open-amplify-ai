@@ -35,6 +35,7 @@ class ChatCompletionRequest:
     max_tokens: Optional[int] = 4000
     stream: Optional[bool] = False
     stream_options: Optional[Dict[str, Any]] = None
+    tools: Optional[List[Dict[str, Any]]] = None
 
 
 # ---------------------------------------------------------------------------
