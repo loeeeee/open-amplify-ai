@@ -130,26 +130,26 @@ async def create_chat_completion(
             
         # Try to parse content as a tool call (kilo formatting)
         tool_calls = None
-        if isinstance(content, str) and content.strip().startswith('{"command"'):
+        if isinstance(content, str) and (content.strip().startswith('{"command"') or content.strip().startswith('{"tool"')):
             try:
                 parsed_content = json.loads(content)
-                tool_calls = [
-                    {
-                        "id": f"call_{uuid.uuid4().hex[:12]}",
-                        "type": "function",
-                        "function": {
-                            "name": parsed_content.get("command"),
-                            "arguments": json.dumps(parsed_content.get("parameters", {}))
+                name = parsed_content.get("tool") or parsed_content.get("command")
+                if name:
+                    tool_calls = [
+                        {
+                            "id": f"call_{uuid.uuid4().hex[:12]}",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(parsed_content.get("parameters", {}))
+                            }
                         }
-                    }
-                ]
-                content = None
-            except json.JSONDecodeError:
-                pass
+                    ]
+                    content = None
+            except Exception as e:
+                print(f"Exception parsing tool call: {e}")
 
-        message_obj = {"role": "assistant"}
-        if content is not None:
-            message_obj["content"] = content
+        message_obj = {"role": "assistant", "content": content}
         if tool_calls is not None:
             message_obj["tool_calls"] = tool_calls
 
