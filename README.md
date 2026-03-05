@@ -84,6 +84,12 @@ Run the mock-based unit tests (no token required):
 uv run pytest src/open_amplify_ai/test_server.py -v
 ```
 
+Run the chat client integration tests (no token required).
+These tests simulate a complete cline/kilo/openclaw chat session with mocked Amplify upstream:
+```bash
+uv run pytest src/open_amplify_ai/test_chat_client_integration.py -v
+```
+
 Run the live integration tests against the real Amplify API (token required).
 These tests replicate the actual request patterns that kilo, cline, and openclaw use:
 ```bash
