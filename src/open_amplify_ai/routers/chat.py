@@ -149,9 +149,12 @@ async def create_chat_completion(
             
         # Try to parse content as a tool call (kilo formatting)
         tool_calls = None
-        if isinstance(content, str) and (content.strip().startswith('{"command"') or content.strip().startswith('{"tool"')):
+        if isinstance(content, str) and ('"tool"' in content or '"command"' in content):
             try:
-                parsed_content = json.loads(content)
+                import re
+                match = re.search(r'(\{[\s\S]*\})', content)
+                json_str = match.group(1) if match else content
+                parsed_content = json.loads(json_str, strict=False)
                 name = parsed_content.get("tool") or parsed_content.get("command")
                 if name:
                     tool_calls = [

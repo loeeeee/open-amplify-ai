@@ -16,6 +16,7 @@ We have added an OpenAI-compatible API layer that translates requests to the Amp
 - [Kilo Client Tool Call Issue Analysis](docs-vibe/46_kilo_client_tool_call_issue_report.md) — Details on why the Kilo client has issues parsing tool calls from the API.
 - [Kilo Client Tool Call Formatting Fix Report](docs-vibe/47_kilo_client_tool_call_fix_report.md) — Details on how the tool call formatting issue was resolved to maintain OpenAI compatibility.
 - [Routing Duplication Fix Report](docs-vibe/48_routing_duplication_fix_report.md) — Details on the removal of duplicated routing in the main server module.
+- [Kilo Tool Parsing Bugfix Report](docs-vibe/50_kilo_tool_parsing_bugfix_report.md) — Details on fixing the JSON parsing error (`MODEL_NO_TOOLS_USED`) caused by literal newlines and markdown wrappers.
 
 ### Running the server
 You can start the server locally by running:
