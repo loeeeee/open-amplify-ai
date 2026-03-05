@@ -178,9 +178,13 @@ def stream_amplify_chat(
                 parsed_content_delta = None
                 
                 # Check if it looks like a complete JSON tool call
-                if isinstance(content_delta, str) and (content_delta.strip().startswith('{"command"') or content_delta.strip().startswith('{"tool"')):
+                if isinstance(content_delta, str) and ('"tool"' in content_delta or '"command"' in content_delta):
                     try:
-                        parsed_content = json.loads(content_delta)
+                        import re
+                        match = re.search(r'(\{[\s\S]*\})', content_delta)
+                        json_str = match.group(1) if match else content_delta
+                        
+                        parsed_content = json.loads(json_str, strict=False)
                         name = parsed_content.get("tool") or parsed_content.get("command")
                         if name:
                             tool_calls = [
@@ -197,7 +201,7 @@ def stream_amplify_chat(
                             parsed_content_delta = None
                         else:
                             parsed_content_delta = content_delta
-                    except json.JSONDecodeError:
+                    except Exception:
                         parsed_content_delta = content_delta
                 else:
                     parsed_content_delta = content_delta
