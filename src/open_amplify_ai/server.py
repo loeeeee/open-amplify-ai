@@ -1556,15 +1556,17 @@ async def list_files_in_vector_store_batch(vector_store_id: str, batch_id: str) 
 # ---------------------------------------------------------------------------
 
 
-def run() -> None:
+def run(port: Optional[int] = None) -> None:
     """Start the Uvicorn server.
 
     Bind address and port are read from environment variables so that the
     NixOS systemd unit can configure them without requiring code changes:
       AMPLIFY_SERVER_HOST  - defaults to 0.0.0.0
-      AMPLIFY_SERVER_PORT  - defaults to 8000
+      AMPLIFY_SERVER_PORT  - defaults to 8080
+      
+    CLI argument for port overrides the environment variable.
     """
     host = os.getenv("AMPLIFY_SERVER_HOST", "0.0.0.0")
-    port = int(os.getenv("AMPLIFY_SERVER_PORT", "8080"))
+    port = port or int(os.getenv("AMPLIFY_SERVER_PORT", "8080"))
     logger.info("Starting server on %s:%d", host, port)
     uvicorn.run("open_amplify_ai.server:app", host=host, port=port, reload=False)

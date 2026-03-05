@@ -28,9 +28,15 @@ def main() -> None:
     )
 
     # Server subcommand
-    subparsers.add_parser(
+    server_parser = subparsers.add_parser(
         "server",
         help="Start the OpenAI-compatible FastAPI server locally"
+    )
+    server_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to run the server on (default: 8080 or AMPLIFY_SERVER_PORT)"
     )
 
     args = parser.parse_args()
@@ -38,7 +44,7 @@ def main() -> None:
     if args.command == "probe":
         probe_api.main()
     elif args.command == "server":
-        server.run()
+        server.run(port=args.port)
     else:
         parser.print_help()
         sys.exit(1)
