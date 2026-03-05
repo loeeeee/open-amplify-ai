@@ -14,7 +14,7 @@ from open_amplify_ai.server import app
 # emit when pointed at this server, not just generic endpoint smoke-tests.
 #
 # To run:
-#   AMPLIFY_AI_TOKEN="..." uv run pytest src/open_amplify_ai/test_integration.py -v -s
+#   AMPLIFY_AI_TOKEN="..." uv run pytest tests/integration/live/test_live_endpoints.py -v -s
 # ---------------------------------------------------------------------------
 
 
