@@ -1,5 +1,6 @@
 """Helper functions for Amplify API integration."""
 import json
+import logging
 import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -12,6 +13,23 @@ from open_amplify_ai.types import (
     AmplifyFilesQueryData,
     AmplifyFilesQueryRequest,
 )
+
+def handle_upstream_error(logger: logging.Logger, e: Exception, context_msg: str) -> HTTPException:
+    """Consistently log and wrap upstream RequestExceptions."""
+    error_detail = ""
+    if hasattr(e, "response") and e.response is not None:
+        try:
+            error_detail = e.response.text
+        except Exception:
+            pass
+    
+    logger.error("Error during %s: %s - Response: %s", context_msg, e, error_detail)
+    if hasattr(e, "request") and e.request:
+        body = getattr(e.request, "body", None)
+        if body:
+            logger.error("Request body sent: %s", body)
+            
+    return HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e} - {error_detail}")
 
 def not_implemented(feature: str) -> HTTPException:
     """Return a 501 HTTPException for unimplemented features."""

@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.types import ChatMessage, ChatCompletionRequest, AmplifyChatRequest
-from open_amplify_ai.utils import stream_amplify_chat
+from open_amplify_ai.utils import stream_amplify_chat, handle_upstream_error
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,9 @@ async def create_chat_completion(
             # Amplify AI only recognises "system", so remap it.
             if role == "developer":
                 role = "system"
+            elif role == "tool":
+                role = "user"
+                
             content_raw = m.get("content", "")
             if isinstance(content_raw, list):
                 content_text = ""
@@ -47,7 +50,20 @@ async def create_chat_completion(
                         content_text += part
                 content = content_text
             else:
-                content = str(content_raw)
+                content = str(content_raw) if content_raw is not None else ""
+                
+            orig_role = m.get("role", "")
+            if orig_role == "tool":
+                name = m.get("name", "unknown")
+                content = f"[Tool Result: {name}]\n{content}"
+            elif orig_role == "assistant" and "tool_calls" in m:
+                calls_str = ""
+                for tc in m.get("tool_calls", []):
+                    if tc.get("type") == "function":
+                        func = tc.get("function", {})
+                        calls_str += f"\n[Tool Call: {func.get('name')}]\nParameters: {func.get('arguments')}\n"
+                content += calls_str
+
             parsed_messages.append(ChatMessage(role=role, content=content))
             
         chat_request = ChatCompletionRequest(
@@ -157,5 +173,4 @@ async def create_chat_completion(
             },
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error during chat completion: %s", e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "chat completion")

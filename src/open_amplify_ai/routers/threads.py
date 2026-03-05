@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
-from open_amplify_ai.utils import not_implemented
+from open_amplify_ai.utils import not_implemented, handle_upstream_error
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,7 @@ async def delete_thread(
             "deleted": bool(data.get("success", False)),
         }
     except requests.exceptions.RequestException as e:
-        logger.error("Error deleting thread %s: %s", thread_id, e)
-        raise HTTPException(status_code=500, detail=f"Error communicating with Amplify AI: {e}")
+        raise handle_upstream_error(logger, e, "deleting")
 
 
 # ---------------------------------------------------------------------------

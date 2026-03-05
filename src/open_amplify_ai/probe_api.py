@@ -1,3 +1,4 @@
+from open_amplify_ai.utils import handle_upstream_error
 import base64
 import json
 import logging
