@@ -455,9 +455,11 @@ from open_amplify_ai.routers import (
     assistants,
     threads,
     vector_stores,
-    stubs
+    stubs,
+    dashboard,
 )
 
+app.include_router(dashboard.router)
 app.include_router(models.router)
 app.include_router(chat.router)
 app.include_router(files.router)

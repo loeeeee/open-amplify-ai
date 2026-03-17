@@ -38,6 +38,14 @@ Enable verbose logging for request/response debugging with:
 - CLI flag: `amplify server --debug`
 - or environment: `AMPLIFY_DEBUG=1`
 
+## Dashboard
+
+A token usage dashboard is available at the root endpoint:
+
+- `GET /` — plain HTML page showing aggregate token counts (prompt, completion, total) and a table of the 100 most recent requests, sourced from `logs/token_stats.csv`.
+
+The CSV path can be overridden via the `AMPLIFY_STATS_CSV` environment variable.
+
 ## OpenAI-Compatible API
 
 The FastAPI server exposes a subset of the OpenAI API under `/v1/*`, backed by Amplify AI (`https://prod-api.vanderbilt.ai`). It is compatible with AI coding tools that expect OpenAI’s `chat.completions` endpoint, including streaming and tool-call output.
