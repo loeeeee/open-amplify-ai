@@ -130,27 +130,27 @@ To develop or run the application locally:
 
 All test commands are expected to run from within `nix-shell`.
 
-- **Unit tests (mock-based, no Amplify token required)**:
+- **Unit tests (no Amplify token required)**:
 
   ```bash
-  uv run pytest src/open_amplify_ai/test_server.py -v
+  uv run pytest tests/unit -v
   ```
 
-- **Chat client integration tests (mocked upstream, no token required)**  
-  Simulate a full cline/kilo/openclaw chat session against the compatibility layer:
+- **Mocked integration tests (no Amplify token required)**  
+  Exercise the full FastAPI stack with mocked Amplify upstream, including cline/kilo/openclaw usage patterns:
 
   ```bash
-  uv run pytest src/open_amplify_ai/test_chat_client_integration.py -v
+  uv run pytest tests/integration/mocked -v
   ```
 
 - **Live integration tests (real Amplify API, token required)**  
-  Mirror the request patterns used by cline/kilo/openclaw:
+  Run against the real Amplify API, mirroring cline/kilo/openclaw request patterns:
 
   ```bash
-  AMPLIFY_AI_TOKEN="..." uv run pytest src/open_amplify_ai/test_integration.py -v -s
+  AMPLIFY_AI_TOKEN="..." uv run pytest tests/integration/live/test_live_endpoints.py -v -s
   ```
 
-If a `.env` file is present, `python-dotenv` loads `AMPLIFY_AI_TOKEN` automatically.
+If a `.env` file is present, `python-dotenv` (via `dotenv.load_dotenv`) loads `AMPLIFY_AI_TOKEN` automatically.
 
 ## API Prober
 
