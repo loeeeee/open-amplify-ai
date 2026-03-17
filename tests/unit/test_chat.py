@@ -1,4 +1,5 @@
 import io
+import json
 import pytest
 import os
 import requests
@@ -211,4 +212,130 @@ def test_chat_completions_custom_params(mocker):
     assert captured["payload"]["data"]["temperature"] == 0.2
     assert captured["payload"]["data"]["max_tokens"] == 512
     assert captured["payload"]["data"]["options"]["model"]["id"] == "claude-3"
+
+
+def test_chat_completions_tool_calls_json_format(mocker):
+    """POST /v1/chat/completions converts tool_calls in history to JSON format for Amplify."""
+    captured = {}
+
+    def fake_post(url, headers, json, timeout):
+        captured["payload"] = json
+        mock = mocker.Mock()
+        mock.raise_for_status = mocker.Mock()
+        mock.json.return_value = {"success": True, "data": "ok"}
+        return mock
+
+    mocker.patch("open_amplify_ai.routers.chat.requests.post", side_effect=fake_post)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": "List files"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": '{"path": "/home", "recursive": true}'
+                        }
+                    }
+                ]
+            },
+            {
+                "role": "tool",
+                "name": "list_files",
+                "content": "file1.txt\nfile2.txt"
+            },
+            {"role": "user", "content": "Now read file1.txt"},
+        ],
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+
+    amplify_messages = captured["payload"]["data"]["messages"]
+    assert len(amplify_messages) == 4
+
+    # Assistant message should contain JSON tool call format, not [Tool Call: ...]
+    assistant_msg = amplify_messages[1]
+    assert assistant_msg["role"] == "assistant"
+    assert '{"tool": "list_files"' in assistant_msg["content"]
+    assert '"parameters"' in assistant_msg["content"]
+    assert "[Tool Call:" not in assistant_msg["content"]
+
+    # Tool result message should contain JSON format, not [Tool Result: ...]
+    tool_msg = amplify_messages[2]
+    assert tool_msg["role"] == "user"  # tool role is remapped to user
+    assert '{"tool_result": "list_files"' in tool_msg["content"]
+    assert "[Tool Result:" not in tool_msg["content"]
+
+
+def test_chat_completions_legacy_tool_call_parsing(mocker):
+    """POST /v1/chat/completions defensively parses legacy [Tool Call: ...] format from LLM."""
+    mock_response = mocker.Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "success": True,
+        "data": '[Tool Call: update_todo_list]\nParameters: {"todos": "[x] Done"}',
+    }
+    mocker.patch("open_amplify_ai.routers.chat.requests.post", return_value=mock_response)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Update the todo list"}],
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    data = response.json()
+    choice = data["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert "tool_calls" in choice["message"]
+
+    tool_call = choice["message"]["tool_calls"][0]
+    assert tool_call["type"] == "function"
+    assert tool_call["function"]["name"] == "update_todo_list"
+    import json
+    args = json.loads(tool_call["function"]["arguments"])
+    assert "todos" in args
+
+
+def test_chat_completions_streaming_legacy_tool_call(mocker):
+    """POST /v1/chat/completions defensively parses legacy [Tool Call: ...] in streaming."""
+    mock_cm = mocker.MagicMock()
+    mock_cm.__enter__ = mocker.Mock(return_value=mock_cm)
+    mock_cm.__exit__ = mocker.Mock(return_value=False)
+    mock_cm.status_code = 200
+    mock_cm.raise_for_status = mocker.Mock()
+    mock_cm.iter_lines = mocker.Mock(
+        return_value=[
+            b'[Tool Call: read_file]\nParameters: {"path": "/tmp/test.txt"}',
+            b"data: [DONE]"
+        ]
+    )
+    mocker.patch("open_amplify_ai.utils.requests.post", return_value=mock_cm)
+
+    req_body = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Read the file"}],
+        "stream": True,
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+
+    body = response.text
+    has_tool_call = False
+    for line in body.strip().split("\n"):
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        chunk = json.loads(line[6:])
+        delta = chunk.get("choices", [{}])[0].get("delta", {})
+        if "tool_calls" in delta:
+            has_tool_call = True
+            tc = delta["tool_calls"][0]
+            assert tc["function"]["name"] == "read_file"
+
+    assert has_tool_call, "No tool_calls chunk found in streaming response for legacy format"
 

@@ -2,21 +2,11 @@
 
 ![Build](https://github.com/loeeeee/amplify-ai/actions/workflows/build.yml/badge.svg)
 
-This project provides an OpenAI-compatible wrapper for the Amplify AI API used at 
+This project provides an OpenAI-compatible wrapper for the Amplify AI API used at
 Vanderbilt University.
 
 ## OpenAI Compatible Server
 We have added an OpenAI-compatible API layer that translates requests to the Amplify AI format.
-
-### Documentation
-- [Amplify to OpenAI Response Mapping](docs/amplify_to_openai_response_mapping.md) — Details how responses and tool calls are parsed from the Amplify backend.
-- [Request Error Logging](docs-vibe/40_error_logging_fix_report.md) — Details on how bad requests to the server are logged with their request and response payloads.
-- [Server Port CLI Argument](docs-vibe/42_server_port_cli_argument.md) — Details on the implementation of the `--port` CLI argument.
-- [Debug Mode Request/Response Logging](docs-vibe/45_debug_request_response_logging.md) — Details on how to enable debug mode to log all HTTP requests and responses.
-- [Kilo Client Tool Call Issue Analysis](docs-vibe/46_kilo_client_tool_call_issue_report.md) — Details on why the Kilo client has issues parsing tool calls from the API.
-- [Kilo Client Tool Call Formatting Fix Report](docs-vibe/47_kilo_client_tool_call_fix_report.md) — Details on how the tool call formatting issue was resolved to maintain OpenAI compatibility.
-- [Routing Duplication Fix Report](docs-vibe/48_routing_duplication_fix_report.md) — Details on the removal of duplicated routing in the main server module.
-- [Kilo Tool Parsing Bugfix Report](docs-vibe/50_kilo_tool_parsing_bugfix_report.md) — Details on fixing the JSON parsing error (`MODEL_NO_TOOLS_USED`) caused by literal newlines and markdown wrappers.
 
 ### Running the server
 You can start the server locally by running:
@@ -113,7 +103,7 @@ To probe all documented endpoints (including conflict variants), run:
 ```bash
 amplify probe
 ```
-The script reads `AMPLIFY_AI_TOKEN` and `AMPLIFY_AI_EMAIL` from `.env`, probes all endpoints 
+The script reads `AMPLIFY_AI_TOKEN` and `AMPLIFY_AI_EMAIL` from `.env`, probes all endpoints
 (including conflict variants for `/chat`, `/files/upload`, and `/files/tags/list`), and generates:
 - `docs-vibe/17_amplify_api_report.md` — full diagnostic report
 - `docs/amplify_api_probed.md` — concise verified API reference

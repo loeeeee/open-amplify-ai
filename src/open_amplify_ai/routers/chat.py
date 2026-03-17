@@ -55,13 +55,21 @@ async def create_chat_completion(
             orig_role = m.get("role", "")
             if orig_role == "tool":
                 name = m.get("name", "unknown")
-                content = f"[Tool Result: {name}]\n{content}"
+                # Format tool result as JSON to match system prompt style
+                tool_result_obj = {"tool_result": name, "result": content}
+                content = json.dumps(tool_result_obj)
             elif orig_role == "assistant" and "tool_calls" in m:
                 calls_str = ""
                 for tc in m.get("tool_calls", []):
                     if tc.get("type") == "function":
                         func = tc.get("function", {})
-                        calls_str += f"\n[Tool Call: {func.get('name')}]\nParameters: {func.get('arguments')}\n"
+                        # Parse arguments JSON string and reformat as {"tool": name, "parameters": args}
+                        try:
+                            args = json.loads(func.get('arguments', '{}'))
+                        except json.JSONDecodeError:
+                            args = {}
+                        tool_call_obj = {"tool": func.get('name'), "parameters": args}
+                        calls_str += "\n" + json.dumps(tool_call_obj) + "\n"
                 content += calls_str
 
             parsed_messages.append(ChatMessage(role=role, content=content))
@@ -149,7 +157,36 @@ async def create_chat_completion(
             
         # Try to parse content as a tool call (kilo formatting)
         tool_calls = None
-        if isinstance(content, str) and ('"tool"' in content or '"command"' in content):
+        
+        # First, try to detect legacy [Tool Call: ...] format
+        if isinstance(content, str) and '[Tool Call:' in content:
+            try:
+                import re
+                # Match pattern: [Tool Call: name]\nParameters: {json}
+                match = re.search(r'\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(.+)', content, re.DOTALL)
+                if match:
+                    name = match.group(1).strip()
+                    params_str = match.group(2).strip()
+                    try:
+                        params = json.loads(params_str, strict=False)
+                    except json.JSONDecodeError:
+                        params = {}
+                    tool_calls = [
+                        {
+                            "id": f"call_{uuid.uuid4().hex[:12]}",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(params)
+                            }
+                        }
+                    ]
+                    content = None
+            except Exception as e:
+                print(f"Exception parsing legacy tool call format: {e}")
+        
+        # If not found, try JSON format with "tool" or "command" keys
+        if tool_calls is None and isinstance(content, str) and ('"tool"' in content or '"command"' in content):
             try:
                 import re
                 match = re.search(r'(\{[\s\S]*\})', content)
@@ -169,7 +206,7 @@ async def create_chat_completion(
                     ]
                     content = None
             except Exception as e:
-                print(f"Exception parsing tool call: {e}")
+                print(f"Exception parsing JSON tool call: {e}")
 
         message_obj = {"role": "assistant", "content": content}
         if tool_calls is not None:

@@ -177,8 +177,36 @@ def stream_amplify_chat(
                 tool_calls = None
                 parsed_content_delta = None
                 
-                # Check if it looks like a complete JSON tool call
-                if isinstance(content_delta, str) and ('"tool"' in content_delta or '"command"' in content_delta):
+                # First, try to detect legacy [Tool Call: ...] format
+                if isinstance(content_delta, str) and '[Tool Call:' in content_delta:
+                    try:
+                        import re
+                        # Match pattern: [Tool Call: name]\nParameters: {json}
+                        match = re.search(r'\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(.+)', content_delta, re.DOTALL)
+                        if match:
+                            name = match.group(1).strip()
+                            params_str = match.group(2).strip()
+                            try:
+                                params = json.loads(params_str, strict=False)
+                            except json.JSONDecodeError:
+                                params = {}
+                            tool_calls = [
+                                {
+                                    "index": 0,
+                                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": json.dumps(params)
+                                    }
+                                }
+                            ]
+                            parsed_content_delta = None
+                    except Exception:
+                        pass
+                
+                # If not found, try JSON format with "tool" or "command" keys
+                if tool_calls is None and isinstance(content_delta, str) and ('"tool"' in content_delta or '"command"' in content_delta):
                     try:
                         import re
                         match = re.search(r'(\{[\s\S]*\})', content_delta)
@@ -203,7 +231,9 @@ def stream_amplify_chat(
                             parsed_content_delta = content_delta
                     except Exception:
                         parsed_content_delta = content_delta
-                else:
+                
+                # If still no tool call found, use content as-is
+                if tool_calls is None and parsed_content_delta is None:
                     parsed_content_delta = content_delta
 
                 delta_obj = {"role": "assistant", "content": parsed_content_delta}
