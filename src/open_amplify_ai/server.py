@@ -1,5 +1,5 @@
 from open_amplify_ai.utils import handle_upstream_error
-from open_amplify_ai.middleware import ErrorLoggingMiddleware, DebugLoggingMiddleware
+from open_amplify_ai.middleware import ErrorLoggingMiddleware, DebugLoggingMiddleware, TokenCounterMiddleware
 import base64
 import json
 import logging
@@ -37,6 +37,7 @@ app = FastAPI(title="Amplify AI OpenAI Compatible API")
 
 app.add_middleware(DebugLoggingMiddleware)
 app.add_middleware(ErrorLoggingMiddleware)
+app.add_middleware(TokenCounterMiddleware)
 
 if os.getenv("AMPLIFY_DEBUG", "0").lower() in ("1", "true", "yes"):
     logger.setLevel(logging.DEBUG)

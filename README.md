@@ -192,3 +192,21 @@ curl http://localhost:8080/v1/models
 | User | ephemeral (`DynamicUser = true`) |
 | Restart policy | `on-failure`, 5 s back-off |
 
+## Token Usage Statistics
+
+Every HTTP request is recorded to a CSV file for usage monitoring and debugging.
+
+| Location | Path |
+|---|---|
+| Dev (local) | `logs/token_stats.csv` (relative to CWD) |
+| NixOS systemd | `/var/lib/amplify-ai/logs/token_stats.csv` |
+
+### CSV columns
+
+`timestamp, ip_address, method, path, status_code, prompt_tokens, completion_tokens, total_tokens, error`
+
+- `timestamp` — ISO 8601 UTC
+- `ip_address` — client IP (`X-Forwarded-For` header, or direct connection IP)
+- `prompt_tokens` / `completion_tokens` — estimated (4 characters per token); non-zero only for `POST /v1/chat/completions`
+- `error` — empty on success; HTTP status or exception message on failure
+
