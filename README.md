@@ -4,7 +4,7 @@
 
 An OpenAI-compatible HTTP layer in front of the Vanderbilt Amplify AI API, designed primarily for internal developers running local AI tools (cline, openclaw, kilo, etc.) and NixOS deployments.
 
-External users are welcome, but this README assumes familiarity with NixOS and Amplify AI. For a concise, probed API reference, see `docs/amplify_api_probed.md`.
+External users are welcome, but this README assumes familiarity with NixOS and Amplify AI. For a concise, probed API reference, see the locally generated `docs/amplify_api_probed.md`.
 
 ## Quick Start (Local Server)
 
