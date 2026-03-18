@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+from enum import Enum
 from fastapi import Request
 
 from open_amplify_ai.stats import (
@@ -133,18 +134,31 @@ class DebugLoggingMiddleware:
             raise
 
 
+# Path prefixes that trigger token counting/statistics recording
+class LLMPathPrefix(str, Enum):
+    CHAT = "/v1/chat/completions"
+    ASSISTANTS = "/v1/assistants"
+    THREADS = "/v1/threads"
+    EMBEDDINGS = "/v1/embeddings"
+    COMPLETIONS = "/v1/completions"
+    IMAGES = "/v1/images"
+    AUDIO = "/v1/audio"
+    MODERATIONS = "/v1/moderations"
+
+
 class TokenCounterMiddleware:
     """
     Pure ASGI middleware that records per-request token usage statistics to a CSV file.
 
+    Only records statistics for LLM-related endpoints (chat, assistants, etc.).
+    Metadata endpoints like /v1/models or the dashboard are ignored.
+
     For /v1/chat/completions requests, prompt and completion token counts are
     estimated from the request and response bodies (4 characters per token).
-    All other endpoints are recorded with zero token counts but with full IP
-    address, status code, and error information.
+    Other LLM endpoints record zero token counts but include IP, status, and errors.
 
     The CSV file is written to logs/token_stats.csv relative to the server's
-    working directory (resolves to /var/lib/amplify-ai/logs/token_stats.csv
-    under the NixOS systemd service).
+    working directory.
     """
 
     def __init__(self, app):
@@ -152,13 +166,18 @@ class TokenCounterMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        """Intercept each HTTP request and append a stats row to the CSV."""
+        """Intercept each HTTP request and append a stats row to the CSV if it's an LLM endpoint."""
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
         request = Request(scope, receive)
-        content_type = request.headers.get("content-type", "")
         path = request.url.path
+
+        # Only track endpoints that are in the LLM path prefix list
+        if not any(path.startswith(prefix.value) for prefix in LLMPathPrefix):
+            return await self.app(scope, receive, send)
+
+        content_type = request.headers.get("content-type", "")
         method = request.method
 
         ip_address = request.headers.get("x-forwarded-for", "")

@@ -209,8 +209,8 @@ def test_token_counter_records_upstream_exception(mocker) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_token_counter_non_chat_endpoint_zero_tokens(mocker) -> None:
-    """Non-chat endpoints are recorded with zero prompt and completion tokens."""
+def test_token_counter_ignores_non_llm_endpoint(mocker) -> None:
+    """Non-LLM endpoints like /v1/models are NOT recorded."""
     write_mock = _patch_stats(mocker)
     mock_response = mocker.Mock()
     mock_response.status_code = 200
@@ -223,12 +223,24 @@ def test_token_counter_non_chat_endpoint_zero_tokens(mocker) -> None:
 
     client.get("/v1/models")
 
+    assert write_mock.call_count == 0
+
+
+def test_token_counter_records_other_llm_endpoints(mocker) -> None:
+    """Other LLM endpoints like /v1/assistants ARE recorded."""
+    write_mock = _patch_stats(mocker)
+    mock_response = mocker.Mock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json.return_value = {"object": "list", "data": []}
+    mocker.patch("open_amplify_ai.routers.assistants.requests.get", return_value=mock_response)
+
+    client.get("/v1/assistants")
+
     assert write_mock.call_count == 1
     record, _ = write_mock.call_args[0]
+    assert record.path == "/v1/assistants"
     assert record.prompt_tokens == 0
-    assert record.completion_tokens == 0
-    assert record.total_tokens == 0
-    assert record.path == "/v1/models"
 
 
 # ---------------------------------------------------------------------------
