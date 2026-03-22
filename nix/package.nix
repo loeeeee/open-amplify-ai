@@ -31,6 +31,7 @@ python3Packages.buildPythonPackage rec {
 
   propagatedBuildInputs = with python3Packages; [
     python-dotenv
+    httpx
     requests
     fastapi
     uvicorn
