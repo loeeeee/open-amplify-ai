@@ -278,6 +278,7 @@ in {
     # port         = 8080;
     # dataDir      = "/var/lib/amplify-ai";
     # openFirewall = false;        # set true to open the TCP port in the firewall
+    # debug        = false;        # set true for verbose HTTP logging (avoid in production)
   };
 }
 ```
@@ -310,6 +311,7 @@ curl http://localhost:8080/v1/models
 |---             |---                            |
 | Systemd unit   | `amplify-ai.service`          |
 | Default bind   | `127.0.0.1:8080` (configurable via `services.amplify-ai.host` / `port`) |
+| Debug logging  | `services.amplify-ai.debug` (default `false`; when `true`, sets `AMPLIFY_DEBUG=1`) |
 | Log / state dir| `/var/lib/amplify-ai/` (default `dataDir`) |
 | User           | Ephemeral (`DynamicUser = true`) |
 | Restart policy | `on-failure`, 5 s back-off    |

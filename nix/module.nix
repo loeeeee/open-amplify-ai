@@ -9,6 +9,7 @@
 #   services.amplify-ai = {
 #     enable          = true;
 #     environmentFile = /run/secrets/amplify-ai.env;
+#     # debug = true;  # optional: verbose HTTP logging (troubleshooting only)
 #   };
 #
 # The environmentFile must contain (one per line, no extra spaces):
@@ -71,6 +72,17 @@ in {
       description = "Whether to open the firewall for the configured port.";
     };
 
+    debug = lib.mkOption {
+      type        = lib.types.bool;
+      default     = false;
+      description = ''
+        When true, sets AMPLIFY_DEBUG=1 so the server logs at DEBUG and records
+        request and response bodies (see middleware). This is useful for
+        troubleshooting but exposes sensitive traffic; do not leave enabled in
+        production.
+      '';
+    };
+
   };
 
   config = lib.mkIf cfg.enable {
@@ -105,7 +117,7 @@ in {
         Environment = [
           "AMPLIFY_SERVER_HOST=${cfg.host}"
           "AMPLIFY_SERVER_PORT=${toString cfg.port}"
-        ];
+        ] ++ lib.optional cfg.debug "AMPLIFY_DEBUG=1";
 
         ExecStart = "${amplifyPackage}/bin/amplify server";
 
