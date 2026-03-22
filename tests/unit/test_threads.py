@@ -1,15 +1,20 @@
 import io
-import pytest
 import os
-import requests
+import pytest
 from fastapi.testclient import TestClient
 from open_amplify_ai.server import app
 
-# Set up dummy environment variable for tests to bypass token validation failure
 os.environ["AMPLIFY_AI_TOKEN"] = "test-token-123"
 
 client = TestClient(app)
 
+
+def _make_async_client(mocker, response):
+    """Build an async httpx client mock that returns the given response."""
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.delete = mocker.AsyncMock(return_value=response)
+    return mock_client
 
 
 def test_delete_thread_success(mocker):
@@ -18,7 +23,10 @@ def test_delete_thread_success(mocker):
     mock_response.status_code = 200
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "message": "Thread deleted successfully"}
-    mocker.patch("open_amplify_ai.routers.threads.requests.delete", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.threads.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.delete("/v1/threads/thread-abc123")
     assert response.status_code == 200
@@ -33,11 +41,12 @@ def test_delete_thread_with_slash_id(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True}
-    mocker.patch("open_amplify_ai.routers.threads.requests.delete", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.threads.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.delete("/v1/threads/user@vu.edu/thr/abc-123")
     assert response.status_code == 200
     data = response.json()
     assert data["deleted"] is True
-
-

@@ -3,7 +3,7 @@ from open_amplify_ai.utils import handle_upstream_error
 import logging
 from typing import Any, Dict
 
-import requests
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
@@ -14,17 +14,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/models", tags=["Models"])
 
+
 @router.get("")
 async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str, Any]:
     """Convert Amplify GET /available_models to OpenAI GET /v1/models."""
     logger.info("Listing available models")
     try:
-        response = requests.get(f"{AMPLIFY_BASE_URL}/available_models", headers=headers)
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{AMPLIFY_BASE_URL}/available_models", headers=headers
+            )
+            response.raise_for_status()
         data = response.json()
 
         if not data.get("success"):
-            raise HTTPException(status_code=500, detail="Failed to fetch models from Amplify AI")
+            raise HTTPException(
+                status_code=500, detail="Failed to fetch models from Amplify AI"
+            )
 
         amplify_models = data.get("data", {}).get("models", [])
         models = [ModelInfo(id=m.get("id")) for m in amplify_models]
@@ -41,12 +47,14 @@ async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str,
                 for m in models
             ],
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "fetching")
 
 
 @router.get("/{model}")
-async def retrieve_model(model: str, headers: dict = Depends(get_amplify_headers)) -> Dict[str, Any]:
+async def retrieve_model(
+    model: str, headers: dict = Depends(get_amplify_headers)
+) -> Dict[str, Any]:
     """
     Retrieve a single model by ID.
 
@@ -54,12 +62,17 @@ async def retrieve_model(model: str, headers: dict = Depends(get_amplify_headers
     """
     logger.info("Retrieving model: %s", model)
     try:
-        response = requests.get(f"{AMPLIFY_BASE_URL}/available_models", headers=headers)
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{AMPLIFY_BASE_URL}/available_models", headers=headers
+            )
+            response.raise_for_status()
         data = response.json()
 
         if not data.get("success"):
-            raise HTTPException(status_code=500, detail="Failed to fetch models from Amplify AI")
+            raise HTTPException(
+                status_code=500, detail="Failed to fetch models from Amplify AI"
+            )
 
         amplify_models = data.get("data", {}).get("models", [])
         match = next((m for m in amplify_models if m.get("id") == model), None)
@@ -75,7 +88,7 @@ async def retrieve_model(model: str, headers: dict = Depends(get_amplify_headers
         }
     except HTTPException:
         raise
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "fetching")
 
 
@@ -87,4 +100,6 @@ async def delete_model(model: str) -> Dict[str, Any]:
     Returns 405 Method Not Allowed per the mapping document.
     """
     logger.info("Attempted deletion of model %s (not supported)", model)
-    raise HTTPException(status_code=405, detail="Model deletion is not supported by Amplify AI.")
+    raise HTTPException(
+        status_code=405, detail="Model deletion is not supported by Amplify AI."
+    )

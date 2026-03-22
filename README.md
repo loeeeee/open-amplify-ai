@@ -46,6 +46,10 @@ A token usage dashboard is available at the root endpoint:
 
 The CSV path can be overridden via the `AMPLIFY_STATS_CSV` environment variable.
 
+## Concurrency Model
+
+All route handlers are `async def` and use `httpx.AsyncClient` (non-blocking) for every upstream call. This allows Uvicorn's event loop to serve multiple in-flight requests concurrently even when upstream LLM calls are slow. The standalone API prober (`probe_api.py`) is exempt and remains synchronous.
+
 ## OpenAI-Compatible API
 
 The FastAPI server exposes a subset of the OpenAI API under `/v1/*`, backed by Amplify AI (`https://prod-api.vanderbilt.ai`). It is compatible with AI coding tools that expect OpenAI’s `chat.completions` endpoint, including streaming and tool-call output.
@@ -133,6 +137,56 @@ To develop or run the application locally:
    ```bash
    start-server
    ```
+
+## Load Testing
+
+The `tests/load/load_test.py` script fires concurrent HTTP requests at a running server instance to measure throughput and latency under parallel load. It targets `POST /v1/chat/completions`, which is the most compute-intensive endpoint.
+
+**Prerequisites:** the server must already be running (see Quick Start above).
+
+```bash
+# Basic run: 50 requests, 10 concurrent workers
+AMPLIFY_AI_TOKEN="..." python tests/load/load_test.py \
+    --url http://localhost:8080 \
+    --concurrency 10 \
+    --total 50 \
+    --model gpt-4o
+```
+
+All options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--url` | `http://localhost:8080` | Base URL of the running server |
+| `--token` | env `AMPLIFY_AI_TOKEN` | Bearer token (falls back to env var) |
+| `--concurrency` | `10` | Number of parallel workers |
+| `--total` | `50` | Total number of requests to send |
+| `--model` | `gpt-4o` | Model identifier to use |
+| `--prompt` | short single-word reply prompt | Prompt text sent in each request |
+| `--timeout` | `60.0` | Per-request timeout in seconds |
+
+The script prints a concise summary report on completion:
+
+```
+Load Test Report
+========================================
+Total requests  : 50
+Successful      : 49
+Failed          : 1
+Total duration  : 42.31 s
+Throughput      : 1.18 req/s
+
+Latency (successful requests)
+----------------------------------------
+Min             : 0.841 s
+Mean            : 3.612 s
+Median (p50)    : 3.440 s
+p95             : 6.120 s
+p99             : 7.030 s
+Max             : 7.450 s
+```
+
+Run logs are written to `logs/load_test.log`.
 
 ## Running Tests
 

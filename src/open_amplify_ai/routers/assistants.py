@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Any, Dict
 
-import requests
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
@@ -21,8 +21,11 @@ async def list_assistants(headers: dict = Depends(get_amplify_headers)) -> Dict[
     """List all assistants via Amplify GET /assistant/list."""
     logger.info("Listing assistants")
     try:
-        resp = requests.get(f"{AMPLIFY_BASE_URL}/assistant/list", headers=headers, timeout=30)
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{AMPLIFY_BASE_URL}/assistant/list", headers=headers
+            )
+            resp.raise_for_status()
         data = resp.json()
         assistants = data.get("data", [])
         openai_assistants = [amplify_assistant_to_openai(a) for a in assistants]
@@ -33,7 +36,7 @@ async def list_assistants(headers: dict = Depends(get_amplify_headers)) -> Dict[
             "last_id": openai_assistants[-1]["id"] if openai_assistants else None,
             "has_more": False,
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "listing")
 
 
@@ -65,13 +68,13 @@ async def create_assistant(
     }
 
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/assistant/create",
-            headers=headers,
-            json=amplify_payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/assistant/create",
+                headers=headers,
+                json=amplify_payload,
+            )
+            resp.raise_for_status()
         data = resp.json()
         result = data.get("data", {})
         return {
@@ -86,7 +89,7 @@ async def create_assistant(
             "file_ids": [],
             "metadata": body.get("metadata", {}),
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "creating")
 
 
@@ -101,20 +104,29 @@ async def retrieve_assistant(
     """
     logger.info("Retrieving assistant: %s", assistant_id)
     try:
-        resp = requests.get(f"{AMPLIFY_BASE_URL}/assistant/list", headers=headers, timeout=30)
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{AMPLIFY_BASE_URL}/assistant/list", headers=headers
+            )
+            resp.raise_for_status()
         data = resp.json()
         assistants = data.get("data", [])
         match = next(
-            (a for a in assistants if a.get("assistantId") == assistant_id or a.get("id") == assistant_id),
+            (
+                a
+                for a in assistants
+                if a.get("assistantId") == assistant_id or a.get("id") == assistant_id
+            ),
             None,
         )
         if not match:
-            raise HTTPException(status_code=404, detail=f"Assistant '{assistant_id}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Assistant '{assistant_id}' not found"
+            )
         return amplify_assistant_to_openai(match)
     except HTTPException:
         raise
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "retrieving")
 
 
@@ -149,13 +161,13 @@ async def modify_assistant(
     }
 
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/assistant/create",
-            headers=headers,
-            json=amplify_payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/assistant/create",
+                headers=headers,
+                json=amplify_payload,
+            )
+            resp.raise_for_status()
         return {
             "id": assistant_id,
             "object": "assistant",
@@ -168,7 +180,7 @@ async def modify_assistant(
             "file_ids": [],
             "metadata": body.get("metadata", {}),
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "modifying")
 
 
@@ -180,18 +192,18 @@ async def delete_assistant(
     logger.info("Deleting assistant: %s", assistant_id)
     payload: AmplifyAssistantCreateRequest = {"data": {"assistantId": assistant_id}}
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/assistant/delete",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/assistant/delete",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
         data = resp.json()
         return {
             "id": assistant_id,
             "object": "assistant.deleted",
             "deleted": bool(data.get("success", False)),
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "deleting")

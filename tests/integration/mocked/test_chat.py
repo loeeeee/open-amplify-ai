@@ -14,7 +14,7 @@ Covers all endpoint groups:
   8. Unsupported endpoint stubs (501)
 
 To run:
-    nix-shell --run "uv run pytest src/open_amplify_ai/test_chat_client_integration.py -v"
+    nix-shell --run "uv run pytest tests/integration/mocked/test_chat.py -v"
 """
 import io
 import json
@@ -29,36 +29,45 @@ os.environ["AMPLIFY_AI_TOKEN"] = "test-token-123"
 client = TestClient(app)
 
 
-def _make_amplify_models_response(models: List[Dict[str, Any]]) -> Any:
-    """Build a mock response for Amplify GET /available_models."""
-    mock = type("MockResponse", (), {
-        "status_code": 200,
-        "raise_for_status": lambda self: None,
-        "json": lambda self: {"success": True, "data": {"models": models}},
-    })()
+# ---------------------------------------------------------------------------
+# Mock helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_json_response(mocker: Any, json_data: Any) -> Any:
+    """Build a generic sync mock response with a json() method."""
+    mock = mocker.Mock()
+    mock.raise_for_status = mocker.Mock()
+    mock.json.return_value = json_data
     return mock
 
 
-def _make_amplify_chat_response(content: str) -> Any:
-    """Build a mock response for Amplify POST /chat (non-streaming)."""
-    mock = type("MockResponse", (), {
-        "status_code": 200,
-        "raise_for_status": lambda self: None,
-        "json": lambda self: {"success": True, "data": content},
-    })()
-    return mock
+def _make_async_client(mocker: Any, response: Any) -> Any:
+    """Build an async httpx client mock returning the same response for all methods."""
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.get = mocker.AsyncMock(return_value=response)
+    mock_client.post = mocker.AsyncMock(return_value=response)
+    return mock_client
 
 
-def _make_amplify_stream_response(data_lines: List[bytes]) -> Any:
-    """Build a mock context-manager response for Amplify POST /chat (streaming)."""
-    mock = type("MockStreamResponse", (), {
-        "status_code": 200,
-        "raise_for_status": lambda self: None,
-        "iter_lines": lambda self: iter(data_lines),
-        "__enter__": lambda self: self,
-        "__exit__": lambda self, *args: False,
-    })()
-    return mock
+def _make_streaming_client(mocker: Any, lines: List[str]) -> Any:
+    """Build an async httpx streaming client mock for utils.stream_amplify_chat."""
+    async def fake_aiter_lines():
+        for line in lines:
+            yield line
+
+    mock_resp = mocker.Mock()
+    mock_resp.raise_for_status = mocker.Mock()
+    mock_resp.aiter_lines = fake_aiter_lines
+
+    mock_stream_cm = mocker.AsyncMock()
+    mock_stream_cm.__aenter__.return_value = mock_resp
+
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.stream = mocker.Mock(return_value=mock_stream_cm)
+    return mock_client
 
 
 # ---------------------------------------------------------------------------
@@ -68,12 +77,16 @@ def _make_amplify_stream_response(data_lines: List[bytes]) -> Any:
 
 def test_client_discovers_models(mocker: Any) -> None:
     """Chat client enumerates available models on startup (cline/kilo pattern)."""
-    mocker.patch(
-        "open_amplify_ai.routers.models.requests.get",
-        return_value=_make_amplify_models_response([
+    resp = _make_json_response(mocker, {
+        "success": True,
+        "data": {"models": [
             {"id": "gpt-4o", "name": "GPT-4o", "provider": "Azure"},
             {"id": "claude-3.5-sonnet", "name": "Claude 3.5 Sonnet", "provider": "AWS"},
-        ]),
+        ]},
+    })
+    mocker.patch(
+        "open_amplify_ai.routers.models.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/models")
@@ -100,9 +113,10 @@ def test_client_discovers_models(mocker: Any) -> None:
 
 def test_client_simple_chat(mocker: Any) -> None:
     """Chat client sends a single user message without streaming."""
+    resp = _make_json_response(mocker, {"success": True, "data": "4"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response("4"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -132,15 +146,14 @@ def test_client_system_prompt_chat(mocker: Any) -> None:
     """Cline sends a system role message followed by the user prompt."""
     captured: Dict[str, Any] = {}
 
-    def _capture_post(url: str, headers: Any, json: Any, timeout: int) -> Any:
-        """Intercept the Amplify POST to verify payload shape."""
-        captured["payload"] = json
-        return _make_amplify_chat_response("Hello! How can I help?")
+    async def fake_post(url: str, **kwargs: Any) -> Any:
+        captured["payload"] = kwargs.get("json", {})
+        return _make_json_response(mocker, {"success": True, "data": "Hello! How can I help?"})
 
-    mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        side_effect=_capture_post,
-    )
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
@@ -155,7 +168,6 @@ def test_client_system_prompt_chat(mocker: Any) -> None:
     data = response.json()
     assert data["choices"][0]["message"]["content"] == "Hello! How can I help?"
 
-    # Verify both messages were forwarded to Amplify
     amplify_messages = captured["payload"]["data"]["messages"]
     assert len(amplify_messages) == 2
     assert amplify_messages[0]["role"] == "system"
@@ -171,30 +183,25 @@ def test_client_list_content_chat(mocker: Any) -> None:
     """Cline passes content as a list of typed parts; server must flatten to string."""
     captured: Dict[str, Any] = {}
 
-    def _capture_post(url: str, headers: Any, json: Any, timeout: int) -> Any:
-        """Intercept the Amplify POST to verify flattened content."""
-        captured["payload"] = json
-        return _make_amplify_chat_response("4")
+    async def fake_post(url: str, **kwargs: Any) -> Any:
+        captured["payload"] = kwargs.get("json", {})
+        return _make_json_response(mocker, {"success": True, "data": "4"})
 
-    mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        side_effect=_capture_post,
-    )
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "What is "},
-                {"type": "text", "text": "2+2?"},
-            ],
-        }],
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "What is "},
+            {"type": "text", "text": "2+2?"},
+        ]}],
     })
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "4"
 
-    # Verify content was flattened into a single string for Amplify
     amplify_content = captured["payload"]["data"]["messages"][0]["content"]
     assert amplify_content == "What is 2+2?"
 
@@ -206,18 +213,15 @@ def test_client_list_content_chat(mocker: Any) -> None:
 
 def test_client_extra_fields_chat(mocker: Any) -> None:
     """Kilo sends messages with extra fields like 'name'; server must not reject."""
+    resp = _make_json_response(mocker, {"success": True, "data": "ok"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response("ok"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": "Hello",
-            "name": "kilo-agent",
-        }],
+        "messages": [{"role": "user", "content": "Hello", "name": "kilo-agent"}],
     })
     assert response.status_code == 200
     assert response.json()["object"] == "chat.completion"
@@ -230,14 +234,14 @@ def test_client_extra_fields_chat(mocker: Any) -> None:
 
 def test_client_streaming_chat(mocker: Any) -> None:
     """Chat client uses stream=True and expects text/event-stream SSE chunks."""
-    stream_lines = [
-        b'data: {"data":"Hello"}',
-        b'data: {"data":" world"}',
-        b"data: [DONE]",
+    lines = [
+        'data: {"data":"Hello"}',
+        'data: {"data":" world"}',
+        "data: [DONE]",
     ]
     mocker.patch(
-        "open_amplify_ai.utils.requests.post",
-        return_value=_make_amplify_stream_response(stream_lines),
+        "open_amplify_ai.utils.httpx.AsyncClient",
+        return_value=_make_streaming_client(mocker, lines),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -251,10 +255,8 @@ def test_client_streaming_chat(mocker: Any) -> None:
     body = response.text
     sse_lines = [l for l in body.strip().split("\n") if l.startswith("data: ")]
 
-    # Should have content chunks + finish chunk + [DONE]
     assert len(sse_lines) >= 3
 
-    # Parse content chunks
     content_parts: List[str] = []
     for line in sse_lines:
         payload = line[6:]
@@ -266,8 +268,6 @@ def test_client_streaming_chat(mocker: Any) -> None:
             content_parts.append(delta["content"])
 
     assert "Hello" in " ".join(content_parts)
-
-    # Final line should be [DONE]
     assert sse_lines[-1] == "data: [DONE]"
 
 
@@ -278,13 +278,10 @@ def test_client_streaming_chat(mocker: Any) -> None:
 
 def test_client_streaming_with_usage(mocker: Any) -> None:
     """Kilo/cline use stream_options.include_usage=True and expects a usage chunk."""
-    stream_lines = [
-        b'data: {"data":"Hi"}',
-        b"data: [DONE]",
-    ]
+    lines = ['data: {"data":"Hi"}', "data: [DONE]"]
     mocker.patch(
-        "open_amplify_ai.utils.requests.post",
-        return_value=_make_amplify_stream_response(stream_lines),
+        "open_amplify_ai.utils.httpx.AsyncClient",
+        return_value=_make_streaming_client(mocker, lines),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -325,9 +322,10 @@ def test_client_streaming_with_usage(mocker: Any) -> None:
 def test_client_tool_call_detection(mocker: Any) -> None:
     """Server detects JSON tool call in response and converts to tool_calls block."""
     tool_response = '{"tool":"list_files","parameters":{"path":"/home","recursive":true}}'
+    resp = _make_json_response(mocker, {"success": True, "data": tool_response})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(tool_response),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -350,17 +348,16 @@ def test_client_tool_call_detection(mocker: Any) -> None:
     args = json.loads(tc["function"]["arguments"])
     assert args["path"] == "/home"
     assert args["recursive"] is True
-
-    # content should be absent or None when tool calls are present
     assert choice["message"].get("content") is None
 
 
 def test_client_tool_call_detection_with_markdown_wrapper(mocker: Any) -> None:
     """Server detects tool call even if the LLM wraps it in markdown code blocks."""
     tool_response = 'Here is the tool you requested:\n```json\n{"tool":"list_files","parameters":{"path":"/home","recursive":true}}\n```\n'
+    resp = _make_json_response(mocker, {"success": True, "data": tool_response})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(tool_response),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -382,11 +379,11 @@ def test_client_tool_call_detection_with_markdown_wrapper(mocker: Any) -> None:
 
 def test_client_tool_call_detection_with_unescaped_newlines(mocker: Any) -> None:
     """Server detects tool call when string literal contains unescaped newlines."""
-    # Note the literal newline character in the content string value
     tool_response = '{"tool": "write_to_file", "parameters": {"path": "/tmp/test.txt", "content": "line1\nline2\nline3"}}'
+    resp = _make_json_response(mocker, {"success": True, "data": tool_response})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(tool_response),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -415,13 +412,14 @@ def test_client_tool_call_detection_with_unescaped_newlines(mocker: Any) -> None
 def test_client_streaming_tool_call(mocker: Any) -> None:
     """Server detects JSON tool call in streaming response and emits tool_calls chunk."""
     tool_json = '{"tool":"read_file","parameters":{"path":"/tmp/test.txt"}}'
-    stream_lines = [
-        f'data: {{"data":"{tool_json.replace(chr(34), chr(92)+chr(34))}"}}'.encode(),
-        b"data: [DONE]",
+    escaped = tool_json.replace('"', '\\"')
+    lines = [
+        f'data: {{"data":"{escaped}"}}',
+        "data: [DONE]",
     ]
     mocker.patch(
-        "open_amplify_ai.utils.requests.post",
-        return_value=_make_amplify_stream_response(stream_lines),
+        "open_amplify_ai.utils.httpx.AsyncClient",
+        return_value=_make_streaming_client(mocker, lines),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -455,15 +453,14 @@ def test_client_multi_turn_conversation(mocker: Any) -> None:
     """Cline sends multiple user/assistant turns; all are forwarded to Amplify."""
     captured: Dict[str, Any] = {}
 
-    def _capture_post(url: str, headers: Any, json: Any, timeout: int) -> Any:
-        """Intercept Amplify POST to verify all turns are forwarded."""
-        captured["payload"] = json
-        return _make_amplify_chat_response("The file contains test data.")
+    async def fake_post(url: str, **kwargs: Any) -> Any:
+        captured["payload"] = kwargs.get("json", {})
+        return _make_json_response(mocker, {"success": True, "data": "The file contains test data."})
 
-    mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        side_effect=_capture_post,
-    )
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
 
     messages = [
         {"role": "system", "content": "You are a coding assistant."},
@@ -478,7 +475,6 @@ def test_client_multi_turn_conversation(mocker: Any) -> None:
     })
     assert response.status_code == 200
 
-    # All 4 messages should be forwarded to Amplify
     amplify_messages = captured["payload"]["data"]["messages"]
     assert len(amplify_messages) == 4
     assert amplify_messages[0]["role"] == "system"
@@ -496,15 +492,14 @@ def test_client_custom_params_forwarded(mocker: Any) -> None:
     """Temperature and max_tokens are forwarded to the Amplify request."""
     captured: Dict[str, Any] = {}
 
-    def _capture_post(url: str, headers: Any, json: Any, timeout: int) -> Any:
-        """Intercept Amplify POST to verify custom params."""
-        captured["payload"] = json
-        return _make_amplify_chat_response("ok")
+    async def fake_post(url: str, **kwargs: Any) -> Any:
+        captured["payload"] = kwargs.get("json", {})
+        return _make_json_response(mocker, {"success": True, "data": "ok"})
 
-    mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        side_effect=_capture_post,
-    )
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/chat/completions", json={
         "model": "claude-3.5-sonnet",
@@ -527,11 +522,14 @@ def test_client_custom_params_forwarded(mocker: Any) -> None:
 
 def test_client_amplify_error_handling(mocker: Any) -> None:
     """Server returns 500 when Amplify upstream signals failure."""
-    import requests as req_lib
-    mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        side_effect=req_lib.exceptions.ConnectionError("Connection refused"),
+    import httpx as httpx_lib
+
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = mocker.AsyncMock(
+        side_effect=httpx_lib.ConnectError("Connection refused")
     )
+    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
@@ -561,12 +559,16 @@ def test_client_malformed_request() -> None:
 
 def test_client_retrieves_single_model(mocker: Any) -> None:
     """Client retrieves a single model by ID (filters from full list)."""
-    mocker.patch(
-        "open_amplify_ai.routers.models.requests.get",
-        return_value=_make_amplify_models_response([
+    resp = _make_json_response(mocker, {
+        "success": True,
+        "data": {"models": [
             {"id": "gpt-4o", "name": "GPT-4o"},
             {"id": "claude-3.5-sonnet", "name": "Claude 3.5 Sonnet"},
-        ]),
+        ]},
+    })
+    mocker.patch(
+        "open_amplify_ai.routers.models.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/models/gpt-4o")
@@ -581,11 +583,13 @@ def test_client_retrieves_single_model(mocker: Any) -> None:
 
 def test_client_retrieves_model_not_found(mocker: Any) -> None:
     """Client gets 404 when requesting a model that does not exist."""
+    resp = _make_json_response(mocker, {
+        "success": True,
+        "data": {"models": [{"id": "gpt-4o", "name": "GPT-4o"}]},
+    })
     mocker.patch(
-        "open_amplify_ai.routers.models.requests.get",
-        return_value=_make_amplify_models_response([
-            {"id": "gpt-4o", "name": "GPT-4o"},
-        ]),
+        "open_amplify_ai.routers.models.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/models/nonexistent-model")
@@ -605,9 +609,10 @@ def test_client_delete_model_rejected() -> None:
 
 def test_client_chat_empty_content(mocker: Any) -> None:
     """Server handles empty string content gracefully."""
+    resp = _make_json_response(mocker, {"success": True, "data": ""})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(""),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={

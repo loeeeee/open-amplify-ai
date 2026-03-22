@@ -4,7 +4,7 @@ import time
 import uuid
 from typing import Any, Dict
 
-import requests
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
@@ -38,23 +38,29 @@ async def create_vector_store(
 
     payload: AmplifyTagsRequest = {"data": {"tags": [tag_id]}}
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/files/tags/create",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/files/tags/create",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
         return {
             "id": tag_id,
             "object": "vector_store",
             "created_at": int(time.time()),
             "name": name,
             "usage_bytes": 0,
-            "file_counts": {"in_progress": 0, "completed": 0, "failed": 0, "cancelled": 0, "total": 0},
+            "file_counts": {
+                "in_progress": 0,
+                "completed": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "total": 0,
+            },
             "status": "completed",
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "creating")
 
 
@@ -69,17 +75,19 @@ async def retrieve_vector_store(
     """
     logger.info("Retrieving vector store: %s", vector_store_id)
     try:
-        tags_resp = requests.get(
-            f"{AMPLIFY_BASE_URL}/files/tags/list",
-            headers=headers,
-            timeout=30,
-        )
-        tags_resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            tags_resp = await client.get(
+                f"{AMPLIFY_BASE_URL}/files/tags/list",
+                headers=headers,
+            )
+            tags_resp.raise_for_status()
         tags = tags_resp.json().get("data", {}).get("tags", [])
         if vector_store_id not in tags:
-            raise HTTPException(status_code=404, detail=f"Vector store '{vector_store_id}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Vector store '{vector_store_id}' not found"
+            )
 
-        items = query_amplify_files(headers, tags=[vector_store_id])
+        items = await query_amplify_files(headers, tags=[vector_store_id])
         file_count = len(items)
         return {
             "id": vector_store_id,
@@ -98,7 +106,7 @@ async def retrieve_vector_store(
         }
     except HTTPException:
         raise
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "retrieving")
 
 
@@ -120,20 +128,20 @@ async def delete_vector_store(
     logger.info("Deleting vector store (tag): %s", vector_store_id)
     payload: AmplifyTagsRequest = {"data": {"tag": vector_store_id}}
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/files/tags/delete",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/files/tags/delete",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
         data = resp.json()
         return {
             "id": vector_store_id,
             "object": "vector_store.deleted",
             "deleted": bool(data.get("success", False)),
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "deleting")
 
 
@@ -144,7 +152,7 @@ async def list_vector_store_files(
     """List all files in a vector store by querying Amplify files filtered by tag."""
     logger.info("Listing files in vector store: %s", vector_store_id)
     try:
-        items = query_amplify_files(headers, tags=[vector_store_id])
+        items = await query_amplify_files(headers, tags=[vector_store_id])
         data = [
             {
                 "id": item.get("id", ""),
@@ -157,7 +165,7 @@ async def list_vector_store_files(
             for item in items
         ]
         return {"object": "list", "data": data}
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "listing")
 
 
@@ -182,13 +190,13 @@ async def create_vector_store_file(
 
     payload: AmplifyTagsRequest = {"data": {"id": file_id, "tags": [vector_store_id]}}
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/files/set_tags",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/files/set_tags",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
         return {
             "id": file_id,
             "object": "vector_store.file",
@@ -197,7 +205,7 @@ async def create_vector_store_file(
             "vector_store_id": vector_store_id,
             "status": "completed",
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "adding")
 
 

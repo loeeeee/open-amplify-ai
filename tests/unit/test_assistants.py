@@ -1,15 +1,21 @@
 import io
-import pytest
 import os
-import requests
+import pytest
 from fastapi.testclient import TestClient
 from open_amplify_ai.server import app
 
-# Set up dummy environment variable for tests to bypass token validation failure
 os.environ["AMPLIFY_AI_TOKEN"] = "test-token-123"
 
 client = TestClient(app)
 
+
+def _make_async_client(mocker, response):
+    """Build an async httpx client mock that returns the given response."""
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.get = mocker.AsyncMock(return_value=response)
+    mock_client.post = mocker.AsyncMock(return_value=response)
+    return mock_client
 
 
 def test_list_assistants_success(mocker):
@@ -29,7 +35,10 @@ def test_list_assistants_success(mocker):
             }
         ],
     }
-    mocker.patch("open_amplify_ai.routers.assistants.requests.get", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.get("/v1/assistants")
     assert response.status_code == 200
@@ -48,7 +57,10 @@ def test_list_assistants_empty(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "data": []}
-    mocker.patch("open_amplify_ai.routers.assistants.requests.get", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.get("/v1/assistants")
     assert response.status_code == 200
@@ -72,7 +84,10 @@ def test_create_assistant_success(mocker):
             "version": 1,
         },
     }
-    mocker.patch("open_amplify_ai.routers.assistants.requests.post", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     req_body = {
         "model": "gpt-4o",
@@ -111,7 +126,10 @@ def test_retrieve_assistant_success(mocker):
             },
         ],
     }
-    mocker.patch("open_amplify_ai.routers.assistants.requests.get", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.get("/v1/assistants/astp/abc123")
     assert response.status_code == 200
@@ -126,7 +144,10 @@ def test_retrieve_assistant_not_found(mocker):
     mock_response = mocker.Mock()
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "data": []}
-    mocker.patch("open_amplify_ai.routers.assistants.requests.get", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.get("/v1/assistants/astp/nonexistent")
     assert response.status_code == 404
@@ -136,14 +157,19 @@ def test_modify_assistant_success(mocker):
     """POST /v1/assistants/{id} sends an upsert to Amplify with the assistantId."""
     captured = {}
 
-    def fake_post(url, headers, json, timeout):
-        captured["payload"] = json
+    async def fake_post(url, **kwargs):
+        captured["payload"] = kwargs.get("json", {})
         m = mocker.Mock()
         m.raise_for_status = mocker.Mock()
         m.json.return_value = {"success": True, "data": {"assistantId": "astp/abc123"}}
         return m
 
-    mocker.patch("open_amplify_ai.routers.assistants.requests.post", side_effect=fake_post)
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient", return_value=mock_client
+    )
 
     req_body = {"name": "Updated Name", "instructions": "New instructions"}
     response = client.post("/v1/assistants/astp/abc123", json=req_body)
@@ -163,7 +189,10 @@ def test_delete_assistant_success(mocker):
         "success": True,
         "message": "Assistant deleted successfully.",
     }
-    mocker.patch("open_amplify_ai.routers.assistants.requests.post", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.delete("/v1/assistants/astp/abc123")
     assert response.status_code == 200
@@ -181,11 +210,12 @@ def test_delete_assistant_amplify_failure(mocker):
         "success": False,
         "message": "You are not authorized to delete this assistant.",
     }
-    mocker.patch("open_amplify_ai.routers.assistants.requests.post", return_value=mock_response)
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
 
     response = client.delete("/v1/assistants/astp/other123")
     assert response.status_code == 200
     data = response.json()
     assert data["deleted"] is False
-
-

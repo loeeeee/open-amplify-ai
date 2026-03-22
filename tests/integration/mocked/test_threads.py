@@ -3,18 +3,8 @@
 These tests exercise the full FastAPI request/response cycle with mocked
 Amplify upstream calls. No live AMPLIFY_AI_TOKEN is needed.
 
-Covers all endpoint groups:
-  1. Model discovery and retrieval
-  2. Chat completions (simple, streaming, tool calls, multi-turn)
-  3. File operations (upload, list, retrieve, delete, content download)
-  4. Assistant lifecycle (create, list, retrieve, modify, delete)
-  5. Thread deletion
-  6. Vector store lifecycle (create, retrieve, delete, files)
-  7. Edge cases and error handling
-  8. Unsupported endpoint stubs (501)
-
 To run:
-    nix-shell --run "uv run pytest src/open_amplify_ai/test_chat_client_integration.py -v"
+    nix-shell --run "uv run pytest tests/integration/mocked/test_threads.py -v"
 """
 import io
 import json
@@ -29,6 +19,12 @@ os.environ["AMPLIFY_AI_TOKEN"] = "test-token-123"
 client = TestClient(app)
 
 
+def _make_json_response(mocker: Any, json_data: Any) -> Any:
+    """Build a generic sync mock response with a json() method."""
+    mock = mocker.Mock()
+    mock.raise_for_status = mocker.Mock()
+    mock.json.return_value = json_data
+    return mock
 
 
 # ===========================================================================
@@ -38,13 +34,13 @@ client = TestClient(app)
 
 def test_client_deletes_thread(mocker: Any) -> None:
     """Client deletes a thread via Amplify DELETE with query param."""
+    resp = _make_json_response(mocker, {"success": True, "message": "Thread deleted"})
+
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.delete = mocker.AsyncMock(return_value=resp)
     mocker.patch(
-        "open_amplify_ai.routers.threads.requests.delete",
-        return_value=type("MockResponse", (), {
-            "status_code": 200,
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": True, "message": "Thread deleted"},
-        })(),
+        "open_amplify_ai.routers.threads.httpx.AsyncClient", return_value=mock_client
     )
 
     response = client.delete("/v1/threads/thread-abc123")
@@ -58,12 +54,13 @@ def test_client_deletes_thread(mocker: Any) -> None:
 
 def test_client_deletes_thread_with_slash_id(mocker: Any) -> None:
     """Thread IDs may contain slashes (email-style); server must handle."""
+    resp = _make_json_response(mocker, {"success": True})
+
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.delete = mocker.AsyncMock(return_value=resp)
     mocker.patch(
-        "open_amplify_ai.routers.threads.requests.delete",
-        return_value=type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": True},
-        })(),
+        "open_amplify_ai.routers.threads.httpx.AsyncClient", return_value=mock_client
     )
 
     response = client.delete("/v1/threads/user@vu.edu/thr/abc-123")

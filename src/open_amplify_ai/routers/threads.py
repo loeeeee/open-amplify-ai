@@ -2,7 +2,7 @@
 import logging
 from typing import Any, Dict
 
-import requests
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
@@ -43,20 +43,20 @@ async def delete_thread(
     """
     logger.info("Deleting thread: %s", thread_id)
     try:
-        resp = requests.delete(
-            f"{AMPLIFY_BASE_URL}/assistant/openai/thread/delete",
-            headers=headers,
-            params={"threadId": thread_id},
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(
+                f"{AMPLIFY_BASE_URL}/assistant/openai/thread/delete",
+                headers=headers,
+                params={"threadId": thread_id},
+            )
+            resp.raise_for_status()
         data = resp.json()
         return {
             "id": thread_id,
             "object": "thread.deleted",
             "deleted": bool(data.get("success", False)),
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "deleting")
 
 

@@ -3,18 +3,8 @@
 These tests exercise the full FastAPI request/response cycle with mocked
 Amplify upstream calls. No live AMPLIFY_AI_TOKEN is needed.
 
-Covers all endpoint groups:
-  1. Model discovery and retrieval
-  2. Chat completions (simple, streaming, tool calls, multi-turn)
-  3. File operations (upload, list, retrieve, delete, content download)
-  4. Assistant lifecycle (create, list, retrieve, modify, delete)
-  5. Thread deletion
-  6. Vector store lifecycle (create, retrieve, delete, files)
-  7. Edge cases and error handling
-  8. Unsupported endpoint stubs (501)
-
 To run:
-    nix-shell --run "uv run pytest src/open_amplify_ai/test_chat_client_integration.py -v"
+    nix-shell --run "uv run pytest tests/integration/mocked/test_assistants.py -v"
 """
 import io
 import json
@@ -29,6 +19,21 @@ os.environ["AMPLIFY_AI_TOKEN"] = "test-token-123"
 client = TestClient(app)
 
 
+def _make_json_response(mocker: Any, json_data: Any) -> Any:
+    """Build a generic sync mock response with a json() method."""
+    mock = mocker.Mock()
+    mock.raise_for_status = mocker.Mock()
+    mock.json.return_value = json_data
+    return mock
+
+
+def _make_async_client(mocker: Any, response: Any) -> Any:
+    """Build an async httpx client mock returning the same response for all methods."""
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.get = mocker.AsyncMock(return_value=response)
+    mock_client.post = mocker.AsyncMock(return_value=response)
+    return mock_client
 
 
 # ===========================================================================
@@ -40,21 +45,17 @@ def test_client_creates_assistant(mocker: Any) -> None:
     """Openclaw creates an assistant via Amplify POST /assistant/create."""
     captured: Dict[str, Any] = {}
 
-    def _capture_post(url: str, headers: Any, json: Any, timeout: int) -> Any:
-        """Intercept Amplify POST to verify payload mapping."""
-        captured["payload"] = json
-        return type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {
-                "success": True,
-                "data": {"assistantId": "astp/new123", "id": "ast/new456"},
-            },
-        })()
+    async def fake_post(url: str, **kwargs: Any) -> Any:
+        captured["payload"] = kwargs.get("json", {})
+        return _make_json_response(mocker, {
+            "success": True,
+            "data": {"assistantId": "astp/new123", "id": "ast/new456"},
+        })
 
-    mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.post",
-        side_effect=_capture_post,
-    )
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch("open_amplify_ai.routers.assistants.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/assistants", json={
         "model": "gpt-4o",
@@ -70,38 +71,34 @@ def test_client_creates_assistant(mocker: Any) -> None:
     assert data["instructions"] == "Be concise and helpful."
     assert data["model"] == "gpt-4o"
 
-    # Verify payload was correctly mapped
     assert captured["payload"]["data"]["name"] == "My Test Assistant"
     assert captured["payload"]["data"]["instructions"] == "Be concise and helpful."
 
 
 def test_client_lists_assistants(mocker: Any) -> None:
     """Openclaw lists all assistants."""
-    mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.get",
-        return_value=type("MockResponse", (), {
-            "status_code": 200,
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {
-                "success": True,
-                "data": [
-                    {
-                        "assistantId": "astp/abc123",
-                        "name": "Test Assistant",
-                        "instructions": "Be helpful",
-                        "createdAt": "2024-01-01T00:00:00",
-                        "dataSources": [],
-                    },
-                    {
-                        "assistantId": "astp/xyz789",
-                        "name": "Other Assistant",
-                        "instructions": "Be brief",
-                        "createdAt": "2024-01-02T00:00:00",
-                        "dataSources": [],
-                    },
-                ],
+    resp = _make_json_response(mocker, {
+        "success": True,
+        "data": [
+            {
+                "assistantId": "astp/abc123",
+                "name": "Test Assistant",
+                "instructions": "Be helpful",
+                "createdAt": "2024-01-01T00:00:00",
+                "dataSources": [],
             },
-        })(),
+            {
+                "assistantId": "astp/xyz789",
+                "name": "Other Assistant",
+                "instructions": "Be brief",
+                "createdAt": "2024-01-02T00:00:00",
+                "dataSources": [],
+            },
+        ],
+    })
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/assistants")
@@ -119,12 +116,10 @@ def test_client_lists_assistants(mocker: Any) -> None:
 
 def test_client_lists_assistants_empty(mocker: Any) -> None:
     """Openclaw gets empty assistant list."""
+    resp = _make_json_response(mocker, {"success": True, "data": []})
     mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.get",
-        return_value=type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": True, "data": []},
-        })(),
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/assistants")
@@ -138,23 +133,21 @@ def test_client_lists_assistants_empty(mocker: Any) -> None:
 
 def test_client_retrieves_assistant(mocker: Any) -> None:
     """Openclaw retrieves a single assistant by ID (filters from full list)."""
-    mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.get",
-        return_value=type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {
-                "success": True,
-                "data": [
-                    {
-                        "assistantId": "astp/abc123",
-                        "name": "Test Assistant",
-                        "instructions": "Be helpful",
-                        "createdAt": "2024-01-01T00:00:00",
-                        "dataSources": [],
-                    },
-                ],
+    resp = _make_json_response(mocker, {
+        "success": True,
+        "data": [
+            {
+                "assistantId": "astp/abc123",
+                "name": "Test Assistant",
+                "instructions": "Be helpful",
+                "createdAt": "2024-01-01T00:00:00",
+                "dataSources": [],
             },
-        })(),
+        ],
+    })
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/assistants/astp/abc123")
@@ -168,12 +161,10 @@ def test_client_retrieves_assistant(mocker: Any) -> None:
 
 def test_client_retrieves_assistant_not_found(mocker: Any) -> None:
     """Openclaw gets 404 when assistant is not found."""
+    resp = _make_json_response(mocker, {"success": True, "data": []})
     mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.get",
-        return_value=type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": True, "data": []},
-        })(),
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.get("/v1/assistants/astp/nonexistent")
@@ -184,18 +175,17 @@ def test_client_modifies_assistant(mocker: Any) -> None:
     """Openclaw modifies an existing assistant via upsert with assistantId."""
     captured: Dict[str, Any] = {}
 
-    def _capture_post(url: str, headers: Any, json: Any, timeout: int) -> Any:
-        """Intercept Amplify POST to verify assistantId is set."""
-        captured["payload"] = json
-        return type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": True, "data": {"assistantId": "astp/abc123"}},
-        })()
+    async def fake_post(url: str, **kwargs: Any) -> Any:
+        captured["payload"] = kwargs.get("json", {})
+        return _make_json_response(mocker, {
+            "success": True,
+            "data": {"assistantId": "astp/abc123"},
+        })
 
-    mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.post",
-        side_effect=_capture_post,
-    )
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = fake_post
+    mocker.patch("open_amplify_ai.routers.assistants.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/assistants/astp/abc123", json={
         "name": "Updated Name",
@@ -206,20 +196,15 @@ def test_client_modifies_assistant(mocker: Any) -> None:
     data = response.json()
     assert data["id"] == "astp/abc123"
     assert data["name"] == "Updated Name"
-
-    # Verify assistantId was included for upsert
     assert captured["payload"]["data"]["assistantId"] == "astp/abc123"
 
 
 def test_client_deletes_assistant(mocker: Any) -> None:
     """Openclaw deletes an assistant."""
+    resp = _make_json_response(mocker, {"success": True, "message": "Deleted"})
     mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.post",
-        return_value=type("MockResponse", (), {
-            "status_code": 200,
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": True, "message": "Deleted"},
-        })(),
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.delete("/v1/assistants/astp/abc123")
@@ -233,12 +218,10 @@ def test_client_deletes_assistant(mocker: Any) -> None:
 
 def test_client_deletes_assistant_unauthorized(mocker: Any) -> None:
     """Openclaw gets deleted=False when Amplify denies deletion."""
+    resp = _make_json_response(mocker, {"success": False, "message": "Not authorized"})
     mocker.patch(
-        "open_amplify_ai.routers.assistants.requests.post",
-        return_value=type("MockResponse", (), {
-            "raise_for_status": lambda self: None,
-            "json": lambda self: {"success": False, "message": "Not authorized"},
-        })(),
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.delete("/v1/assistants/astp/other123")

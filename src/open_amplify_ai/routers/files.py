@@ -5,14 +5,18 @@ import logging
 import time
 from typing import Any, Dict
 
-import requests
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.types import AmplifyFileUploadRequest, AmplifyKeyRequest
-from open_amplify_ai.utils import amplify_item_to_openai_file, query_amplify_files, handle_upstream_error
+from open_amplify_ai.utils import (
+    amplify_item_to_openai_file,
+    query_amplify_files,
+    handle_upstream_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +32,12 @@ async def list_files(headers: dict = Depends(get_amplify_headers)) -> Dict[str, 
     """
     logger.info("Listing files")
     try:
-        items = query_amplify_files(headers)
+        items = await query_amplify_files(headers)
         return {
             "object": "list",
             "data": [amplify_item_to_openai_file(item) for item in items],
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "listing")
 
 
@@ -65,13 +69,13 @@ async def upload_file(
     }
 
     try:
-        init_resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/files/upload",
-            headers=headers,
-            json=upload_payload,
-            timeout=30,
-        )
-        init_resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            init_resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/files/upload",
+                headers=headers,
+                json=upload_payload,
+            )
+            init_resp.raise_for_status()
         init_data = init_resp.json()
 
         if not init_data.get("success"):
@@ -80,14 +84,15 @@ async def upload_file(
         upload_url: str = init_data["uploadUrl"]
         file_key: str = init_data["key"]
 
-        # PUT the binary directly to S3 (no auth header, pre-signed URL)
-        s3_resp = requests.put(
-            upload_url,
-            data=file_bytes,
-            headers={"Content-Type": content_type},
-            timeout=60,
-        )
-        s3_resp.raise_for_status()
+        # PUT the binary directly to S3 (no auth header, pre-signed URL).
+        # httpx uses `content=` for raw bytes instead of `data=`.
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            s3_resp = await client.put(
+                upload_url,
+                content=file_bytes,
+                headers={"Content-Type": content_type},
+            )
+            s3_resp.raise_for_status()
 
         return {
             "id": file_key,
@@ -99,7 +104,7 @@ async def upload_file(
         }
     except HTTPException:
         raise
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "uploading")
 
 
@@ -110,39 +115,47 @@ async def retrieve_file_content(
     """
     Download file content via Amplify POST /assistant/files/download/codeinterpreter.
 
-    Only supported for Code Interpreter files. Returns a redirect or raw bytes.
+    Only supported for Code Interpreter files. Returns raw bytes via StreamingResponse.
     This route MUST be registered before the bare GET /v1/files/{file_id:path} route
     to prevent the greedy :path wildcard from swallowing the /content suffix.
     """
     logger.info("Retrieving file content: %s", file_id)
     payload: AmplifyKeyRequest = {"data": {"key": file_id}}
     try:
-        resp = requests.post(
-            f"{AMPLIFY_BASE_URL}/assistant/files/download/codeinterpreter",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{AMPLIFY_BASE_URL}/assistant/files/download/codeinterpreter",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
         data = resp.json()
         download_url = data.get("downloadUrl", "")
         if not download_url:
-            raise HTTPException(status_code=404, detail="File content not available or file not found")
-        # Proxy the actual binary content
-        content_resp = requests.get(download_url, timeout=60)
-        content_resp.raise_for_status()
+            raise HTTPException(
+                status_code=404, detail="File content not available or file not found"
+            )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            content_resp = await client.get(download_url)
+            content_resp.raise_for_status()
+
         return StreamingResponse(
             iter([content_resp.content]),
-            media_type=content_resp.headers.get("Content-Type", "application/octet-stream"),
+            media_type=content_resp.headers.get(
+                "Content-Type", "application/octet-stream"
+            ),
         )
     except HTTPException:
         raise
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "retrieving")
 
 
 @router.get("/{file_id:path}")
-async def retrieve_file(file_id: str, headers: dict = Depends(get_amplify_headers)) -> Dict[str, Any]:
+async def retrieve_file(
+    file_id: str, headers: dict = Depends(get_amplify_headers)
+) -> Dict[str, Any]:
     """
     Retrieve a single file record by ID.
 
@@ -150,20 +163,21 @@ async def retrieve_file(file_id: str, headers: dict = Depends(get_amplify_header
     """
     logger.info("Retrieving file: %s", file_id)
     try:
-        items = query_amplify_files(headers)
+        items = await query_amplify_files(headers)
         match = next((item for item in items if item.get("id") == file_id), None)
         if not match:
             raise HTTPException(status_code=404, detail=f"File '{file_id}' not found")
         return amplify_item_to_openai_file(match)
     except HTTPException:
         raise
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "retrieving")
 
 
-
 @router.delete("/{file_id:path}")
-async def delete_file(file_id: str, headers: dict = Depends(get_amplify_headers)) -> Dict[str, Any]:
+async def delete_file(
+    file_id: str, headers: dict = Depends(get_amplify_headers)
+) -> Dict[str, Any]:
     """
     Translate OpenAI DELETE /v1/files/{file_id} to Amplify POST /files op=/delete.
 
@@ -190,13 +204,13 @@ async def delete_file(file_id: str, headers: dict = Depends(get_amplify_headers)
         "service": "file",
     }
     try:
-        response = requests.post(
-            f"{AMPLIFY_BASE_URL}/files",
-            headers=headers,
-            json=amplify_body,
-            timeout=15,
-        )
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{AMPLIFY_BASE_URL}/files",
+                headers=headers,
+                json=amplify_body,
+            )
+            response.raise_for_status()
         data = response.json()
         deleted = bool(data.get("success", False))
         return {
@@ -204,5 +218,5 @@ async def delete_file(file_id: str, headers: dict = Depends(get_amplify_headers)
             "object": "file",
             "deleted": deleted,
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "deleting")

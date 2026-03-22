@@ -9,6 +9,7 @@ the captured TokenStatsRecord arguments are inspected directly.
 import json
 import os
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,24 +25,44 @@ def _patch_stats(mocker):
     return mocker.patch("open_amplify_ai.middleware.write_token_stats")
 
 
-def _make_amplify_chat_response(mocker, content: str):
-    """Return a mock non-streaming Amplify /chat response."""
+def _make_async_client(mocker, response):
+    """Build an async httpx client mock for non-streaming calls."""
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.get = mocker.AsyncMock(return_value=response)
+    mock_client.post = mocker.AsyncMock(return_value=response)
+    return mock_client
+
+
+def _make_json_response(mocker, json_data):
+    """Build a generic sync mock response."""
     mock = mocker.Mock()
     mock.status_code = 200
     mock.raise_for_status = mocker.Mock()
-    mock.json.return_value = {"success": True, "data": content}
+    mock.json.return_value = json_data
     return mock
 
 
-def _make_amplify_stream_response(mocker, data_lines):
-    """Return a mock streaming Amplify /chat context-manager response."""
-    mock = mocker.MagicMock()
-    mock.__enter__ = mocker.Mock(return_value=mock)
-    mock.__exit__ = mocker.Mock(return_value=False)
-    mock.status_code = 200
-    mock.raise_for_status = mocker.Mock()
-    mock.iter_lines = mocker.Mock(return_value=data_lines)
-    return mock
+def _make_streaming_client(mocker, lines):
+    """Build an async httpx streaming client mock for utils.stream_amplify_chat.
+
+    lines: list of str/bytes lines that aiter_lines() will yield.
+    """
+    async def fake_aiter_lines():
+        for line in lines:
+            yield line.decode("utf-8") if isinstance(line, bytes) else line
+
+    mock_resp = mocker.Mock()
+    mock_resp.raise_for_status = mocker.Mock()
+    mock_resp.aiter_lines = fake_aiter_lines
+
+    mock_stream_cm = mocker.AsyncMock()
+    mock_stream_cm.__aenter__.return_value = mock_resp
+
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.stream = mocker.Mock(return_value=mock_stream_cm)
+    return mock_client
 
 
 # ---------------------------------------------------------------------------
@@ -52,9 +73,10 @@ def _make_amplify_stream_response(mocker, data_lines):
 def test_token_counter_writes_row_on_success(mocker) -> None:
     """A CSV row is written for every successful chat completion request."""
     write_mock = _patch_stats(mocker)
+    resp = _make_json_response(mocker, {"success": True, "data": "Hello!"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(mocker, "Hello!"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -75,12 +97,12 @@ def test_token_counter_writes_row_on_success(mocker) -> None:
 def test_token_counter_records_prompt_tokens(mocker) -> None:
     """Prompt token estimate is non-zero and proportional to message length."""
     write_mock = _patch_stats(mocker)
+    resp = _make_json_response(mocker, {"success": True, "data": "ok"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(mocker, "ok"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
-    # 400-char message -> 100 estimated prompt tokens
     content = "A" * 400
     client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
@@ -94,10 +116,10 @@ def test_token_counter_records_prompt_tokens(mocker) -> None:
 def test_token_counter_records_completion_tokens(mocker) -> None:
     """Completion token estimate is non-zero for non-streaming responses."""
     write_mock = _patch_stats(mocker)
-    # 80-char response -> 20 estimated completion tokens
+    resp = _make_json_response(mocker, {"success": True, "data": "B" * 80})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(mocker, "B" * 80),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     client.post("/v1/chat/completions", json={
@@ -112,9 +134,10 @@ def test_token_counter_records_completion_tokens(mocker) -> None:
 def test_token_counter_total_equals_sum(mocker) -> None:
     """total_tokens equals prompt_tokens + completion_tokens."""
     write_mock = _patch_stats(mocker)
+    resp = _make_json_response(mocker, {"success": True, "data": "ok"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(mocker, "ok"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     client.post("/v1/chat/completions", json={
@@ -134,9 +157,10 @@ def test_token_counter_total_equals_sum(mocker) -> None:
 def test_token_counter_captures_ip_from_client(mocker) -> None:
     """Client IP is recorded when no X-Forwarded-For header is present."""
     write_mock = _patch_stats(mocker)
+    resp = _make_json_response(mocker, {"success": True, "data": "ok"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(mocker, "ok"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     client.post("/v1/chat/completions", json={
@@ -145,16 +169,16 @@ def test_token_counter_captures_ip_from_client(mocker) -> None:
     })
 
     record, _ = write_mock.call_args[0]
-    # TestClient connects from testclient or 127.0.0.1
     assert record.ip_address != ""
 
 
 def test_token_counter_prefers_x_forwarded_for(mocker) -> None:
     """X-Forwarded-For header is used as IP when present."""
     write_mock = _patch_stats(mocker)
+    resp = _make_json_response(mocker, {"success": True, "data": "ok"})
     mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        return_value=_make_amplify_chat_response(mocker, "ok"),
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
     )
 
     client.post(
@@ -176,7 +200,6 @@ def test_token_counter_records_http_error(mocker) -> None:
     """HTTP 4xx/5xx responses are captured in the error field."""
     write_mock = _patch_stats(mocker)
 
-    # Malformed request triggers 400
     client.post("/v1/chat/completions", json={"messages": "not a list"})
 
     assert write_mock.call_count == 1
@@ -187,20 +210,20 @@ def test_token_counter_records_http_error(mocker) -> None:
 
 def test_token_counter_records_upstream_exception(mocker) -> None:
     """Upstream connection errors are recorded in the error field."""
-    import requests as req_lib
-
     write_mock = _patch_stats(mocker)
-    mocker.patch(
-        "open_amplify_ai.routers.chat.requests.post",
-        side_effect=req_lib.exceptions.ConnectionError("refused"),
+
+    mock_client = mocker.AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post = mocker.AsyncMock(
+        side_effect=httpx.ConnectError("refused")
     )
+    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
 
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Hi"}],
     })
     assert response.status_code == 500
-    # The middleware should still have written a CSV row
     assert write_mock.call_count >= 1
 
 
@@ -212,28 +235,27 @@ def test_token_counter_records_upstream_exception(mocker) -> None:
 def test_token_counter_ignores_non_llm_endpoint(mocker) -> None:
     """Non-LLM endpoints like /v1/models are NOT recorded."""
     write_mock = _patch_stats(mocker)
-    mock_response = mocker.Mock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = mocker.Mock()
-    mock_response.json.return_value = {
+    resp = _make_json_response(mocker, {
         "success": True,
         "data": {"models": [{"id": "gpt-4o", "name": "GPT-4o"}]},
-    }
-    mocker.patch("open_amplify_ai.routers.models.requests.get", return_value=mock_response)
+    })
+    mocker.patch(
+        "open_amplify_ai.routers.models.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
+    )
 
     client.get("/v1/models")
-
     assert write_mock.call_count == 0
 
 
 def test_token_counter_records_other_llm_endpoints(mocker) -> None:
     """Other LLM endpoints like /v1/assistants ARE recorded."""
     write_mock = _patch_stats(mocker)
-    mock_response = mocker.Mock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = mocker.Mock()
-    mock_response.json.return_value = {"object": "list", "data": []}
-    mocker.patch("open_amplify_ai.routers.assistants.requests.get", return_value=mock_response)
+    resp = _make_json_response(mocker, {"success": True, "data": []})
+    mocker.patch(
+        "open_amplify_ai.routers.assistants.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
+    )
 
     client.get("/v1/assistants")
 
@@ -249,16 +271,9 @@ def test_token_counter_records_other_llm_endpoints(mocker) -> None:
 
 
 def test_token_counter_streaming_completion_tokens(mocker) -> None:
-    """Completion tokens are estimated from SSE delta chunks in streaming mode.
-
-    The mock uses Amplify's SSE line format ({"data": "..."}) which
-    stream_amplify_chat transforms into OpenAI-format delta chunks.  The
-    middleware buffers those OpenAI chunks and _completion_tokens_from_sse
-    parses them to count characters.
-    """
+    """Completion tokens are estimated from SSE delta chunks in streaming mode."""
     write_mock = _patch_stats(mocker)
 
-    # Three Amplify lines, each carrying 20 chars -> 60 chars total -> 15 tokens
     delta_content = "A" * 20
     stream_lines = [
         f'data: {{"data":"{delta_content}"}}'.encode(),
@@ -267,8 +282,8 @@ def test_token_counter_streaming_completion_tokens(mocker) -> None:
         b"data: [DONE]",
     ]
     mocker.patch(
-        "open_amplify_ai.utils.requests.post",
-        return_value=_make_amplify_stream_response(mocker, stream_lines),
+        "open_amplify_ai.utils.httpx.AsyncClient",
+        return_value=_make_streaming_client(mocker, stream_lines),
     )
 
     response = client.post("/v1/chat/completions", json={
@@ -287,12 +302,13 @@ def test_token_counter_streaming_completion_tokens(mocker) -> None:
 def test_token_counter_streaming_row_written_once(mocker) -> None:
     """Exactly one CSV row is written per streaming request, not per SSE chunk."""
     write_mock = _patch_stats(mocker)
+    stream_lines = [
+        b'data: {"data":"hi"}',
+        b"data: [DONE]",
+    ]
     mocker.patch(
-        "open_amplify_ai.utils.requests.post",
-        return_value=_make_amplify_stream_response(mocker, [
-            b'data: {"data":"hi"}',
-            b"data: [DONE]",
-        ]),
+        "open_amplify_ai.utils.httpx.AsyncClient",
+        return_value=_make_streaming_client(mocker, stream_lines),
     )
 
     client.post("/v1/chat/completions", json={

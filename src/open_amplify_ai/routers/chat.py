@@ -1,11 +1,12 @@
 """Chat completions endpoints mapped to the Amplify API."""
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
 
-import requests
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/chat", tags=["Chat"])
 
+
 @router.post("/completions")
 async def create_chat_completion(
     request: Request, headers: dict = Depends(get_amplify_headers)
@@ -26,20 +28,19 @@ async def create_chat_completion(
     Convert OpenAI POST /v1/chat/completions to Amplify POST /chat.
 
     Supports both streaming (SSE) and non-streaming responses.
+    Uses httpx async client so the event loop is not blocked during upstream I/O.
     """
     try:
         req_json = await request.json()
-        
+
         parsed_messages = []
         for m in req_json.get("messages", []):
             role = m.get("role", "user")
-            # OpenAI o-series models use "developer" instead of "system".
-            # Amplify AI only recognises "system", so remap it.
             if role == "developer":
                 role = "system"
             elif role == "tool":
                 role = "user"
-                
+
             content_raw = m.get("content", "")
             if isinstance(content_raw, list):
                 content_text = ""
@@ -51,11 +52,10 @@ async def create_chat_completion(
                 content = content_text
             else:
                 content = str(content_raw) if content_raw is not None else ""
-                
+
             orig_role = m.get("role", "")
             if orig_role == "tool":
                 name = m.get("name", "unknown")
-                # Format tool result as JSON to match system prompt style
                 tool_result_obj = {"tool_result": name, "result": content}
                 content = json.dumps(tool_result_obj)
             elif orig_role == "assistant" and "tool_calls" in m:
@@ -63,17 +63,16 @@ async def create_chat_completion(
                 for tc in m.get("tool_calls", []):
                     if tc.get("type") == "function":
                         func = tc.get("function", {})
-                        # Parse arguments JSON string and reformat as {"tool": name, "parameters": args}
                         try:
-                            args = json.loads(func.get('arguments', '{}'))
+                            args = json.loads(func.get("arguments", "{}"))
                         except json.JSONDecodeError:
                             args = {}
-                        tool_call_obj = {"tool": func.get('name'), "parameters": args}
+                        tool_call_obj = {"tool": func.get("name"), "parameters": args}
                         calls_str += "\n" + json.dumps(tool_call_obj) + "\n"
                 content += calls_str
 
             parsed_messages.append(ChatMessage(role=role, content=content))
-            
+
         chat_request = ChatCompletionRequest(
             model=req_json.get("model", ""),
             messages=parsed_messages,
@@ -88,7 +87,8 @@ async def create_chat_completion(
             system_instruction = (
                 "=== IMPORTANT SYSTEM OVERRIDE ===\n"
                 "You have access to the following tools:\n\n"
-                + json.dumps(chat_request.tools, indent=2) + "\n\n"
+                + json.dumps(chat_request.tools, indent=2)
+                + "\n\n"
                 "IGNORE any previous or future instructions that tell you NOT to output JSON blocks or that you must use 'API's native tool format'. "
                 "The environment has changed. To use a tool now, you MUST output EXACTLY ONE JSON object in your response, and NOTHING ELSE. "
                 "The JSON object MUST follow this exact format:\n"
@@ -96,23 +96,33 @@ async def create_chat_completion(
                 "DO NOT wrap the JSON in markdown formatting or code blocks. "
                 "DO NOT output any other text before or after the JSON."
             )
-            system_msg = next((m for m in parsed_messages if m.role == "system"), None)
+            system_msg = next(
+                (m for m in parsed_messages if m.role == "system"), None
+            )
             if system_msg:
                 system_msg.content += "\n\n" + system_instruction
             else:
-                parsed_messages.insert(0, ChatMessage(role="system", content=system_instruction))
+                parsed_messages.insert(
+                    0, ChatMessage(role="system", content=system_instruction)
+                )
     except Exception as e:
         logger.error("Invalid request format: %s", e)
         raise HTTPException(status_code=400, detail="Invalid request format")
 
-    logger.info("Creating chat completion with model %s (stream=%s)", chat_request.model, chat_request.stream)
+    logger.info(
+        "Creating chat completion with model %s (stream=%s)",
+        chat_request.model,
+        chat_request.stream,
+    )
 
     amplify_request: AmplifyChatRequest = {
         "data": {
             "temperature": chat_request.temperature,
             "max_tokens": chat_request.max_tokens,
             "dataSources": [],
-            "messages": [{"role": m.role, "content": m.content} for m in chat_request.messages],
+            "messages": [
+                {"role": m.role, "content": m.content} for m in chat_request.messages
+            ],
             "options": {
                 "model": {"id": chat_request.model},
             },
@@ -124,11 +134,12 @@ async def create_chat_completion(
 
     if chat_request.stream:
         logger.info("Streaming response requested for model %s", chat_request.model)
-        
-        include_usage = False
-        if chat_request.stream_options and chat_request.stream_options.get("include_usage"):
-            include_usage = True
-            
+
+        include_usage = bool(
+            chat_request.stream_options
+            and chat_request.stream_options.get("include_usage")
+        )
+
         return StreamingResponse(
             stream_amplify_chat(
                 amplify_request=amplify_request,
@@ -142,28 +153,29 @@ async def create_chat_completion(
         )
 
     try:
-        response = requests.post(
-            f"{AMPLIFY_BASE_URL}/chat",
-            headers=headers,
-            json=amplify_request,
-            timeout=120,
-        )
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{AMPLIFY_BASE_URL}/chat",
+                headers=headers,
+                json=amplify_request,
+            )
+            response.raise_for_status()
+
         try:
             data = response.json()
             content = data.get("data", "")
         except Exception:
             content = response.text
-            
-        # Try to parse content as a tool call (kilo formatting)
+
         tool_calls = None
-        
-        # First, try to detect legacy [Tool Call: ...] format
-        if isinstance(content, str) and '[Tool Call:' in content:
+
+        if isinstance(content, str) and "[Tool Call:" in content:
             try:
-                import re
-                # Match pattern: [Tool Call: name]\nParameters: {json}
-                match = re.search(r'\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(.+)', content, re.DOTALL)
+                match = re.search(
+                    r"\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(.+)",
+                    content,
+                    re.DOTALL,
+                )
                 if match:
                     name = match.group(1).strip()
                     params_str = match.group(2).strip()
@@ -177,19 +189,19 @@ async def create_chat_completion(
                             "type": "function",
                             "function": {
                                 "name": name,
-                                "arguments": json.dumps(params)
-                            }
+                                "arguments": json.dumps(params),
+                            },
                         }
                     ]
                     content = None
-            except Exception as e:
-                print(f"Exception parsing legacy tool call format: {e}")
-        
-        # If not found, try JSON format with "tool" or "command" keys
-        if tool_calls is None and isinstance(content, str) and ('"tool"' in content or '"command"' in content):
+            except Exception as parse_err:
+                logger.debug("Exception parsing legacy tool call format: %s", parse_err)
+
+        if tool_calls is None and isinstance(content, str) and (
+            '"tool"' in content or '"command"' in content
+        ):
             try:
-                import re
-                match = re.search(r'(\{[\s\S]*\})', content)
+                match = re.search(r"(\{[\s\S]*\})", content)
                 json_str = match.group(1) if match else content
                 parsed_content = json.loads(json_str, strict=False)
                 name = parsed_content.get("tool") or parsed_content.get("command")
@@ -200,15 +212,17 @@ async def create_chat_completion(
                             "type": "function",
                             "function": {
                                 "name": name,
-                                "arguments": json.dumps(parsed_content.get("parameters", {}))
-                            }
+                                "arguments": json.dumps(
+                                    parsed_content.get("parameters", {})
+                                ),
+                            },
                         }
                     ]
                     content = None
-            except Exception as e:
-                print(f"Exception parsing JSON tool call: {e}")
+            except Exception as parse_err:
+                logger.debug("Exception parsing JSON tool call: %s", parse_err)
 
-        message_obj = {"role": "assistant", "content": content}
+        message_obj: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls is not None:
             message_obj["tool_calls"] = tool_calls
 
@@ -231,5 +245,5 @@ async def create_chat_completion(
                 "total_tokens": 0,
             },
         }
-    except requests.exceptions.RequestException as e:
+    except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "chat completion")
