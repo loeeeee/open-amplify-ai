@@ -42,7 +42,7 @@ Enable verbose logging for request/response debugging with:
 
 A token usage dashboard is available at the root endpoint:
 
-- `GET /` — plain HTML page showing aggregate token counts (prompt, completion, total) and a table of the 100 most recent requests, sourced from `logs/token_stats.csv`.
+- `GET /` — plain HTML page sourced from `logs/token_stats.csv` (or `AMPLIFY_STATS_CSV`). It shows the same aggregate totals (requests, prompt, completion, and total tokens, plus errors) for the **last 24 hours**, **last 7 days**, and **lifetime**; **average requests per second** and **tokens per second** over the **last 60 seconds** (UTC window); and a table of the **100 most recent** requests. Timestamps in the table are shown in the **browser’s local timezone** (via a short inline script). The page **auto-refreshes every 5 seconds** (`meta refresh`).
 
 The CSV path can be overridden via the `AMPLIFY_STATS_CSV` environment variable.
 
