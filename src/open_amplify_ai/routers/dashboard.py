@@ -4,11 +4,11 @@ import html
 import logging
 import os
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse
 
 from open_amplify_ai.stats import TokenStatsRecord
@@ -46,6 +46,39 @@ class ModelUsageStats:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+
+
+@dataclass
+class HttpStatusCounts:
+    """Counts of recorded requests by HTTP status class."""
+
+    http_2xx: int
+    http_3xx: int
+    http_4xx: int
+    http_5xx: int
+    http_other: int
+
+
+@dataclass
+class UsageJsonPayload:
+    """JSON body for GET /usage (monitoring / Gatus-friendly flat fields)."""
+
+    window_seconds: int
+    generated_at_utc: str
+    cutoff_utc: str
+    total_requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    error_count: int
+    requests_per_second: float
+    tokens_per_second: float
+    http_2xx: int
+    http_3xx: int
+    http_4xx: int
+    http_5xx: int
+    http_other: int
+    by_model: List[ModelUsageStats]
 
 
 @dataclass
@@ -116,6 +149,24 @@ def aggregate_stats(records: List[TokenStatsRecord]) -> DashboardStats:
         total_tokens=total,
         error_count=errors,
     )
+
+
+def aggregate_http_status_counts(records: List[TokenStatsRecord]) -> HttpStatusCounts:
+    """Count requests per HTTP status class (2xx, 3xx, 4xx, 5xx, other)."""
+    n2 = n3 = n4 = n5 = no = 0
+    for record in records:
+        code = record.status_code
+        if 200 <= code < 300:
+            n2 += 1
+        elif 300 <= code < 400:
+            n3 += 1
+        elif 400 <= code < 500:
+            n4 += 1
+        elif 500 <= code < 600:
+            n5 += 1
+        else:
+            no += 1
+    return HttpStatusCounts(http_2xx=n2, http_3xx=n3, http_4xx=n4, http_5xx=n5, http_other=no)
 
 
 def aggregate_stats_by_model(records: List[TokenStatsRecord]) -> List[ModelUsageStats]:
@@ -380,3 +431,52 @@ async def dashboard() -> str:
         recent=recent,
     )
     return render_html(page)
+
+
+def _usage_seconds_max() -> int:
+    """Maximum allowed lookback window for GET /usage (90 days)."""
+    return 90 * 24 * 60 * 60
+
+
+@router.get("/usage")
+async def usage_json(
+    seconds: int = Query(
+        300,
+        ge=1,
+        le=_usage_seconds_max(),
+        description="UTC lookback window in seconds",
+    ),
+) -> dict[str, Any]:
+    """Return token usage and request metrics for a recent UTC window as JSON.
+
+    Reads the same CSV as the HTML dashboard. Suitable for Gatus [BODY] conditions
+    on keys such as total_requests, error_count, and http_4xx.
+    """
+    csv_path = os.getenv("AMPLIFY_STATS_CSV", os.path.join("logs", "token_stats.csv"))
+    records = read_csv_records(csv_path)
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(seconds=seconds)
+    window_records = records_since(records, cutoff)
+    stats = aggregate_stats(window_records)
+    rates = compute_rate_stats(records, now_utc, window_seconds=seconds)
+    by_model = aggregate_stats_by_model(window_records)
+    status_counts = aggregate_http_status_counts(window_records)
+    payload = UsageJsonPayload(
+        window_seconds=seconds,
+        generated_at_utc=now_utc.isoformat(),
+        cutoff_utc=cutoff.isoformat(),
+        total_requests=stats.total_requests,
+        prompt_tokens=stats.prompt_tokens,
+        completion_tokens=stats.completion_tokens,
+        total_tokens=stats.total_tokens,
+        error_count=stats.error_count,
+        requests_per_second=rates.requests_per_second,
+        tokens_per_second=rates.tokens_per_second,
+        http_2xx=status_counts.http_2xx,
+        http_3xx=status_counts.http_3xx,
+        http_4xx=status_counts.http_4xx,
+        http_5xx=status_counts.http_5xx,
+        http_other=status_counts.http_other,
+        by_model=by_model,
+    )
+    return asdict(payload)

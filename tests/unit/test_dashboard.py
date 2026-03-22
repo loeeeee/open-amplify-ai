@@ -7,6 +7,7 @@ Covers:
   - parse_timestamp_iso, records_since, compute_rate_stats
   - render_html: period summaries, usage-by-model tables, rates, table rows, meta refresh
   - GET /: no CSV present, populated CSV, AMPLIFY_STATS_CSV env override
+  - aggregate_http_status_counts, GET /usage: empty CSV, window filtering, invalid seconds
 """
 import csv
 import os
@@ -18,8 +19,10 @@ from fastapi.testclient import TestClient
 from open_amplify_ai.routers.dashboard import (
     DashboardPageData,
     DashboardStats,
+    HttpStatusCounts,
     ModelUsageStats,
     RateStats,
+    aggregate_http_status_counts,
     aggregate_stats,
     aggregate_stats_by_model,
     compute_rate_stats,
@@ -556,3 +559,106 @@ def test_dashboard_endpoint_respects_env_override(
     response = client.get("/")
     assert response.status_code == 200
     assert "99" in response.text
+
+
+# ---------------------------------------------------------------------------
+# aggregate_http_status_counts
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_http_status_counts_buckets() -> None:
+    """Status codes are classified into 2xx, 3xx, 4xx, 5xx, and other."""
+    records = [
+        _make_record(status_code=200),
+        _make_record(status_code=201),
+        _make_record(status_code=302),
+        _make_record(status_code=404),
+        _make_record(status_code=500),
+        _make_record(status_code=0),
+    ]
+    got = aggregate_http_status_counts(records)
+    assert got == HttpStatusCounts(http_2xx=2, http_3xx=1, http_4xx=1, http_5xx=1, http_other=1)
+
+
+# ---------------------------------------------------------------------------
+# GET /usage endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_usage_endpoint_no_csv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """GET /usage returns JSON with zeros when the stats CSV does not exist."""
+    monkeypatch.setenv("AMPLIFY_STATS_CSV", str(tmp_path / "missing.csv"))
+    response = client.get("/usage")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    data = response.json()
+    assert data["total_requests"] == 0
+    assert data["prompt_tokens"] == 0
+    assert data["completion_tokens"] == 0
+    assert data["total_tokens"] == 0
+    assert data["error_count"] == 0
+    assert data["http_2xx"] == 0
+    assert data["by_model"] == []
+
+
+def test_usage_endpoint_window_and_status_buckets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """GET /usage aggregates only rows in the UTC window and counts HTTP classes."""
+    now = datetime.now(timezone.utc)
+    recent_ts = (now - timedelta(seconds=30)).isoformat()
+    old_ts = (now - timedelta(seconds=400)).isoformat()
+    records = [
+        TokenStatsRecord(
+            timestamp=recent_ts,
+            ip_address="127.0.0.1",
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            error="",
+            model="m1",
+        ),
+        TokenStatsRecord(
+            timestamp=old_ts,
+            ip_address="127.0.0.1",
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=404,
+            prompt_tokens=1,
+            completion_tokens=0,
+            total_tokens=1,
+            error="",
+            model="m2",
+        ),
+    ]
+    csv_path = str(tmp_path / "stats.csv")
+    _write_csv(csv_path, records)
+    monkeypatch.setenv("AMPLIFY_STATS_CSV", csv_path)
+
+    r120 = client.get("/usage", params={"seconds": 120})
+    assert r120.status_code == 200
+    d120 = r120.json()
+    assert d120["window_seconds"] == 120
+    assert d120["total_requests"] == 1
+    assert d120["prompt_tokens"] == 10
+    assert d120["completion_tokens"] == 5
+    assert d120["http_2xx"] == 1
+    assert d120["http_4xx"] == 0
+    assert len(d120["by_model"]) == 1
+    assert d120["by_model"][0]["model"] == "m1"
+
+    r600 = client.get("/usage", params={"seconds": 600})
+    assert r600.status_code == 200
+    d600 = r600.json()
+    assert d600["total_requests"] == 2
+    assert d600["http_2xx"] == 1
+    assert d600["http_4xx"] == 1
+
+
+def test_usage_endpoint_invalid_seconds() -> None:
+    """GET /usage returns 422 when seconds is below the minimum."""
+    response = client.get("/usage", params={"seconds": 0})
+    assert response.status_code == 422

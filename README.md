@@ -44,6 +44,8 @@ A token usage dashboard is available at the root endpoint:
 
 - `GET /` — plain HTML page sourced from `logs/token_stats.csv` (or `AMPLIFY_STATS_CSV`). It shows the same aggregate totals (requests, prompt, completion, and total tokens, plus errors) for the **last 24 hours**, **last 7 days**, and **lifetime**; **usage by model** (requests and token sums per requested model id) for each of those periods; **average requests per second** and **tokens per second** over the **last 60 seconds** (UTC window); and a table of the **100 most recent** requests including a **Model** column (requested model id from the JSON body; shown as `(unknown)` when empty). Timestamps in the table are shown in the **browser’s local timezone** (via a short inline script). The page **auto-refreshes every 5 seconds** (`meta refresh`).
 
+- `GET /usage` — JSON summary of the same CSV stats for a configurable **UTC lookback window**. Query parameter **`seconds`** (integer, default `300`, minimum `1`, maximum 90 days) selects how far back to aggregate. The response includes `window_seconds`, `generated_at_utc`, `cutoff_utc`, token totals (`prompt_tokens`, `completion_tokens`, `total_tokens`), `total_requests`, `error_count`, `requests_per_second`, `tokens_per_second` (rates over that window), HTTP status bucket counts (`http_2xx`, `http_3xx`, `http_4xx`, `http_5xx`, `http_other`), and `by_model` (per-model aggregates). Use this endpoint for monitoring tools such as [Gatus](https://gatus.io/) (e.g. conditions on `[BODY].error_count` or `[BODY].total_requests`).
+
 The CSV path can be overridden via the `AMPLIFY_STATS_CSV` environment variable.
 
 ## Concurrency Model
