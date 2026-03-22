@@ -8,6 +8,7 @@ from fastapi import Request
 from open_amplify_ai.stats import (
     build_record,
     extract_completion_tokens,
+    extract_model,
     extract_prompt_tokens,
     write_token_stats,
 )
@@ -209,6 +210,7 @@ class TokenCounterMiddleware:
                     prompt_tokens=0,
                     completion_tokens=0,
                     error=error_desc,
+                    model=extract_model(b""),
                 )
                 write_token_stats(record, _TOKEN_STATS_CSV)
             return
@@ -267,5 +269,6 @@ class TokenCounterMiddleware:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 error=error_desc,
+                model=extract_model(body),
             )
             write_token_stats(record, _TOKEN_STATS_CSV)

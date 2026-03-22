@@ -1,10 +1,11 @@
 """Unit tests for the dashboard router (routers/dashboard.py).
 
 Covers:
-  - read_csv_records: missing file, valid CSV, malformed rows
+  - read_csv_records: missing file, valid CSV, malformed rows, optional model column
   - aggregate_stats: empty list, single record, multiple records with errors
+  - aggregate_stats_by_model: grouping and sort order
   - parse_timestamp_iso, records_since, compute_rate_stats
-  - render_html: period summaries, rates, table rows, meta refresh
+  - render_html: period summaries, usage-by-model tables, rates, table rows, meta refresh
   - GET /: no CSV present, populated CSV, AMPLIFY_STATS_CSV env override
 """
 import csv
@@ -17,8 +18,10 @@ from fastapi.testclient import TestClient
 from open_amplify_ai.routers.dashboard import (
     DashboardPageData,
     DashboardStats,
+    ModelUsageStats,
     RateStats,
     aggregate_stats,
+    aggregate_stats_by_model,
     compute_rate_stats,
     parse_timestamp_iso,
     read_csv_records,
@@ -50,6 +53,7 @@ def _write_csv(path: str, records: list[TokenStatsRecord]) -> None:
         "completion_tokens",
         "total_tokens",
         "error",
+        "model",
     ]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -66,6 +70,7 @@ def _write_csv(path: str, records: list[TokenStatsRecord]) -> None:
                     "completion_tokens": record.completion_tokens,
                     "total_tokens": record.total_tokens,
                     "error": record.error,
+                    "model": record.model,
                 }
             )
 
@@ -89,14 +94,23 @@ def _page(
     *,
     recent: list[TokenStatsRecord] | None = None,
     rates: RateStats | None = None,
+    by_model_24h: list[ModelUsageStats] | None = None,
+    by_model_7d: list[ModelUsageStats] | None = None,
+    by_model_lifetime: list[ModelUsageStats] | None = None,
 ) -> DashboardPageData:
     """Build a DashboardPageData with the same stats for each period."""
     r = rates if rates is not None else RateStats(0.0, 0.0)
     rec = recent if recent is not None else []
+    m24 = by_model_24h if by_model_24h is not None else []
+    m7 = by_model_7d if by_model_7d is not None else []
+    mlife = by_model_lifetime if by_model_lifetime is not None else []
     return DashboardPageData(
         last_24_hours=stats,
         last_7_days=stats,
         lifetime=stats,
+        by_model_24h=m24,
+        by_model_7d=m7,
+        by_model_lifetime=mlife,
         rates=r,
         recent=rec,
     )
@@ -129,6 +143,23 @@ def test_read_csv_records_valid_file(tmp_path: pytest.TempPathFactory) -> None:
     assert result[0].completion_tokens == 5
     assert result[1].prompt_tokens == 20
     assert result[1].path == "/v1/chat/completions"
+
+
+def test_read_csv_records_model_optional(tmp_path: pytest.TempPathFactory) -> None:
+    """Rows without a model column get an empty model string."""
+    csv_path = str(tmp_path / "stats.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        fh.write(
+            "timestamp,ip_address,method,path,status_code,"
+            "prompt_tokens,completion_tokens,total_tokens,error\n"
+        )
+        fh.write(
+            "2026-01-01T00:00:00+00:00,127.0.0.1,POST,/v1/chat/completions,200,4,2,6,\n"
+        )
+
+    result = read_csv_records(csv_path)
+    assert len(result) == 1
+    assert result[0].model == ""
 
 
 def test_read_csv_records_skips_malformed_rows(tmp_path: pytest.TempPathFactory) -> None:
@@ -206,6 +237,60 @@ def test_aggregate_stats_counts_errors() -> None:
     ]
     stats = aggregate_stats(records)
     assert stats.error_count == 2
+
+
+# ---------------------------------------------------------------------------
+# aggregate_stats_by_model
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_stats_by_model_groups_and_sorts() -> None:
+    """Sums per model and sorts by total tokens descending."""
+    records = [
+        TokenStatsRecord(
+            timestamp="2026-01-01T00:00:00+00:00",
+            ip_address="127.0.0.1",
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            error="",
+            model="small",
+        ),
+        TokenStatsRecord(
+            timestamp="2026-01-01T00:00:00+00:00",
+            ip_address="127.0.0.1",
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            error="",
+            model="big",
+        ),
+        TokenStatsRecord(
+            timestamp="2026-01-01T00:00:00+00:00",
+            ip_address="127.0.0.1",
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            prompt_tokens=1,
+            completion_tokens=0,
+            total_tokens=1,
+            error="",
+            model="",
+        ),
+    ]
+    rows = aggregate_stats_by_model(records)
+    assert [r.model for r in rows] == ["big", "small", ""]
+    assert rows[0].total_tokens == 150
+    assert rows[0].total_requests == 1
+    unknown = rows[2]
+    assert unknown.prompt_tokens == 1
+    assert unknown.total_requests == 1
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +421,7 @@ def test_render_html_contains_summary_values() -> None:
     assert html_out.count("100") >= 3
     assert html_out.count("200") >= 3
     assert html_out.count("300") >= 3
-    assert html_out.count("3") >= 3
+    assert html_out.count("Errors</dt><dd>3</dd>") == 3
     assert "1.25" in html_out
     assert "99.50" in html_out
     assert 'http-equiv="refresh" content="5"' in html_out
@@ -356,20 +441,56 @@ def test_render_html_no_data_placeholder() -> None:
 def test_render_html_shows_request_rows() -> None:
     """Each record in the recent list produces a table row with its fields."""
     stats = DashboardStats(1, 4, 2, 6, 0)
-    record = _make_record(
+    record = build_record(
         ip_address="10.0.0.1",
         method="POST",
         path="/v1/chat/completions",
         status_code=200,
         prompt_tokens=4,
         completion_tokens=2,
+        model="gpt-4o",
     )
     page = _page(stats, recent=[record])
     html_out = render_html(page)
     assert "10.0.0.1" in html_out
     assert "POST" in html_out
     assert "/v1/chat/completions" in html_out
+    assert "gpt-4o" in html_out
+    assert "<th>Model</th>" in html_out
     assert 'class="dashboard-ts"' in html_out
+
+
+def test_render_html_unknown_model_label() -> None:
+    """Empty model id is shown as (unknown) in the recent table."""
+    stats = DashboardStats(1, 0, 0, 0, 0)
+    record = _make_record()
+    page = _page(stats, recent=[record])
+    html_out = render_html(page)
+    assert "(unknown)" in html_out
+
+
+def test_render_html_usage_by_model_tables() -> None:
+    """Per-model sections render rows from ModelUsageStats."""
+    stats = DashboardStats(0, 0, 0, 0, 0)
+    m = ModelUsageStats(
+        model="alpha",
+        total_requests=2,
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+    )
+    page = _page(
+        stats,
+        by_model_24h=[m],
+        by_model_7d=[m],
+        by_model_lifetime=[m],
+    )
+    html_out = render_html(page)
+    assert "Usage by model (last 24 hours)" in html_out
+    assert "Usage by model (last 7 days)" in html_out
+    assert "Usage by model (lifetime)" in html_out
+    assert "alpha" in html_out
+    assert html_out.count("15") >= 3
 
 
 def test_render_html_highlights_error_status() -> None:

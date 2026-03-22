@@ -91,6 +91,7 @@ def test_token_counter_writes_row_on_success(mocker) -> None:
     assert record.error == ""
     assert record.method == "POST"
     assert record.path == "/v1/chat/completions"
+    assert record.model == "gpt-4o"
     assert "token_stats.csv" in csv_path
 
 

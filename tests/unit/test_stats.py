@@ -3,9 +3,10 @@
 Tests cover:
   - estimate_tokens heuristic
   - extract_prompt_tokens from request body bytes
+  - extract_model from JSON request bodies
   - extract_completion_tokens for non-streaming and streaming (SSE) responses
-  - write_token_stats CSV persistence (header creation, row append)
-  - build_record timestamp and totals
+  - write_token_stats CSV persistence (header creation, row append, legacy migration)
+  - build_record timestamp, totals, and model field
 """
 import csv
 import json
@@ -20,6 +21,7 @@ from open_amplify_ai.stats import (
     build_record,
     estimate_tokens,
     extract_completion_tokens,
+    extract_model,
     extract_prompt_tokens,
     write_token_stats,
 )
@@ -97,6 +99,33 @@ def test_extract_prompt_tokens_missing_messages() -> None:
     """Returns 0 when the body has no messages key."""
     body = json.dumps({"model": "gpt-4o"}).encode()
     assert extract_prompt_tokens(body) == 0
+
+
+# ---------------------------------------------------------------------------
+# extract_model
+# ---------------------------------------------------------------------------
+
+
+def test_extract_model_string() -> None:
+    """Returns the top-level model string from JSON."""
+    body = json.dumps({"model": "gpt-4o", "messages": []}).encode()
+    assert extract_model(body) == "gpt-4o"
+
+
+def test_extract_model_missing() -> None:
+    """Returns empty string when model is absent."""
+    assert extract_model(b"{}") == ""
+
+
+def test_extract_model_non_string() -> None:
+    """Returns empty string when model is not a string."""
+    body = json.dumps({"model": 123}).encode()
+    assert extract_model(body) == ""
+
+
+def test_extract_model_invalid_json() -> None:
+    """Returns empty string for unparseable bodies."""
+    assert extract_model(b"not json") == ""
 
 
 def test_extract_prompt_tokens_empty_content() -> None:
@@ -227,6 +256,33 @@ def test_build_record_error_field() -> None:
     assert record.error == "Connection refused"
 
 
+def test_build_record_model_default() -> None:
+    """Model defaults to empty string."""
+    record = build_record(
+        ip_address="127.0.0.1",
+        method="POST",
+        path="/v1/chat/completions",
+        status_code=200,
+        prompt_tokens=1,
+        completion_tokens=1,
+    )
+    assert record.model == ""
+
+
+def test_build_record_model_set() -> None:
+    """Model is stored when provided."""
+    record = build_record(
+        ip_address="127.0.0.1",
+        method="POST",
+        path="/v1/chat/completions",
+        status_code=200,
+        prompt_tokens=1,
+        completion_tokens=1,
+        model="mymodel",
+    )
+    assert record.model == "mymodel"
+
+
 # ---------------------------------------------------------------------------
 # write_token_stats
 # ---------------------------------------------------------------------------
@@ -265,6 +321,7 @@ def test_write_token_stats_creates_file_with_header(tmp_path) -> None:
             "completion_tokens",
             "total_tokens",
             "error",
+            "model",
         }
         rows = list(reader)
     assert len(rows) == 1
@@ -272,6 +329,37 @@ def test_write_token_stats_creates_file_with_header(tmp_path) -> None:
     assert rows[0]["prompt_tokens"] == "5"
     assert rows[0]["completion_tokens"] == "3"
     assert rows[0]["total_tokens"] == "8"
+    assert rows[0]["model"] == ""
+
+
+def test_write_token_stats_migrates_legacy_csv_without_model_column(tmp_path) -> None:
+    """Rewrites a pre-model CSV so the header gains model before appending."""
+    csv_path = str(tmp_path / "token_stats.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        fh.write(
+            "timestamp,ip_address,method,path,status_code,"
+            "prompt_tokens,completion_tokens,total_tokens,error\n"
+        )
+        fh.write(
+            "2026-01-01T00:00:00+00:00,127.0.0.1,POST,/v1/chat/completions,200,1,1,2,\n"
+        )
+    record = build_record(
+        ip_address="127.0.0.1",
+        method="POST",
+        path="/v1/chat/completions",
+        status_code=200,
+        prompt_tokens=3,
+        completion_tokens=1,
+        model="gpt-4o",
+    )
+    write_token_stats(record, csv_path)
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 2
+    assert rows[0]["model"] == ""
+    assert rows[0]["prompt_tokens"] == "1"
+    assert rows[1]["model"] == "gpt-4o"
+    assert rows[1]["prompt_tokens"] == "3"
 
 
 def test_write_token_stats_appends_rows(tmp_path) -> None:

@@ -10,8 +10,6 @@ import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
-
 logger = logging.getLogger(__name__)
 
 _csv_lock = threading.Lock()
@@ -30,6 +28,7 @@ class TokenStatsRecord:
     completion_tokens: int
     total_tokens: int
     error: str = field(default="")
+    model: str = field(default="")
 
 
 def estimate_tokens(text: str) -> int:
@@ -60,6 +59,16 @@ def extract_prompt_tokens(body_bytes: bytes) -> int:
         return total_chars // 4
     except Exception:
         return 0
+
+
+def extract_model(body_bytes: bytes) -> str:
+    """Return the top-level model id from a JSON request body, or empty string."""
+    try:
+        payload = json.loads(body_bytes.decode("utf-8", errors="replace"))
+        model = payload.get("model", "")
+        return model if isinstance(model, str) else ""
+    except Exception:
+        return ""
 
 
 def _completion_tokens_from_json(response_bytes: bytes) -> int:
@@ -119,6 +128,7 @@ def build_record(
     prompt_tokens: int,
     completion_tokens: int,
     error: str = "",
+    model: str = "",
 ) -> TokenStatsRecord:
     """Construct a TokenStatsRecord with the current UTC timestamp."""
     return TokenStatsRecord(
@@ -131,7 +141,34 @@ def build_record(
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
         error=error,
+        model=model,
     )
+
+
+def _csv_header_needs_model_migration(csv_path: str) -> bool:
+    """Return True if the file exists and its header row lacks a model column."""
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            line = fh.readline()
+        if not line.strip():
+            return False
+        header = next(csv.reader([line]))
+    except OSError:
+        return False
+    return "model" not in header
+
+
+def _rewrite_csv_with_model_column(csv_path: str, fieldnames: list[str]) -> None:
+    """Rewrite csv_path so the header includes model; existing rows get model empty."""
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        rows = list(reader)
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            out = {k: row.get(k, "") for k in fieldnames}
+            writer.writerow(out)
 
 
 def write_token_stats(record: TokenStatsRecord, csv_path: str) -> None:
@@ -150,13 +187,16 @@ def write_token_stats(record: TokenStatsRecord, csv_path: str) -> None:
         "completion_tokens",
         "total_tokens",
         "error",
+        "model",
     ]
     with _csv_lock:
         try:
-            file_exists = os.path.isfile(csv_path)
+            existed_before = os.path.isfile(csv_path)
+            if existed_before and _csv_header_needs_model_migration(csv_path):
+                _rewrite_csv_with_model_column(csv_path, fieldnames)
             with open(csv_path, "a", newline="", encoding="utf-8") as fh:
                 writer = csv.DictWriter(fh, fieldnames=fieldnames)
-                if not file_exists:
+                if not existed_before:
                     writer.writeheader()
                 writer.writerow(
                     {
@@ -169,6 +209,7 @@ def write_token_stats(record: TokenStatsRecord, csv_path: str) -> None:
                         "completion_tokens": record.completion_tokens,
                         "total_tokens": record.total_tokens,
                         "error": record.error,
+                        "model": record.model,
                     }
                 )
         except Exception as exc:

@@ -3,6 +3,7 @@ import csv
 import html
 import logging
 import os
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -37,12 +38,26 @@ class RateStats:
 
 
 @dataclass
+class ModelUsageStats:
+    """Token usage aggregated for one model id within a time window."""
+
+    model: str
+    total_requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass
 class DashboardPageData:
     """All values needed to render the HTML dashboard."""
 
     last_24_hours: DashboardStats
     last_7_days: DashboardStats
     lifetime: DashboardStats
+    by_model_24h: List[ModelUsageStats]
+    by_model_7d: List[ModelUsageStats]
+    by_model_lifetime: List[ModelUsageStats]
     rates: RateStats
     recent: List[TokenStatsRecord]
 
@@ -72,6 +87,7 @@ def read_csv_records(csv_path: str) -> List[TokenStatsRecord]:
                             completion_tokens=int(row.get("completion_tokens", 0)),
                             total_tokens=int(row.get("total_tokens", 0)),
                             error=row.get("error", ""),
+                            model=row.get("model", ""),
                         )
                     )
                 except (ValueError, KeyError) as exc:
@@ -100,6 +116,37 @@ def aggregate_stats(records: List[TokenStatsRecord]) -> DashboardStats:
         total_tokens=total,
         error_count=errors,
     )
+
+
+def aggregate_stats_by_model(records: List[TokenStatsRecord]) -> List[ModelUsageStats]:
+    """Group records by model id and sum token counts; sort by total tokens descending."""
+    acc: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "total_requests": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+    )
+    for record in records:
+        key = record.model or ""
+        bucket = acc[key]
+        bucket["total_requests"] += 1
+        bucket["prompt_tokens"] += record.prompt_tokens
+        bucket["completion_tokens"] += record.completion_tokens
+        bucket["total_tokens"] += record.total_tokens
+    rows = [
+        ModelUsageStats(
+            model=model,
+            total_requests=b["total_requests"],
+            prompt_tokens=b["prompt_tokens"],
+            completion_tokens=b["completion_tokens"],
+            total_tokens=b["total_tokens"],
+        )
+        for model, b in acc.items()
+    ]
+    rows.sort(key=lambda r: (-r.total_tokens, r.model))
+    return rows
 
 
 def parse_timestamp_iso(ts: str) -> Optional[datetime]:
@@ -165,6 +212,39 @@ def _summary_dl(stats: DashboardStats) -> str:
     )
 
 
+def _model_label(model: str) -> str:
+    """Human-readable model cell; empty ids show as (unknown)."""
+    return "(unknown)" if not model else model
+
+
+def _model_usage_table(rows: List[ModelUsageStats]) -> str:
+    """Return an HTML table of per-model usage, or a no-data row."""
+    if not rows:
+        return '<table><thead><tr><th>Model</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th></tr></thead><tbody><tr><td colspan="5">No data recorded yet.</td></tr></tbody></table>'
+    body = ""
+    for row in rows:
+        label = html.escape(_model_label(row.model))
+        body += (
+            f"<tr>"
+            f"<td>{label}</td>"
+            f"<td>{row.total_requests}</td>"
+            f"<td>{row.prompt_tokens}</td>"
+            f"<td>{row.completion_tokens}</td>"
+            f"<td>{row.total_tokens}</td>"
+            f"</tr>\n"
+        )
+    return (
+        "<table>\n"
+        "<thead>\n"
+        "<tr><th>Model</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th></tr>\n"
+        "</thead>\n"
+        "<tbody>\n"
+        f"{body}"
+        "</tbody>\n"
+        "</table>"
+    )
+
+
 def render_html(page: DashboardPageData) -> str:
     """Build an HTML page with usage by period, rates, and a recent-requests table.
 
@@ -177,12 +257,14 @@ def render_html(page: DashboardPageData) -> str:
         status_style = 'style="color:#c00"' if record.status_code >= 400 else ""
         ts_attr = html.escape(record.timestamp, quote=True)
         ts_body = html.escape(record.timestamp)
+        model_cell = html.escape(_model_label(record.model))
         rows_html += (
             f"<tr>"
             f'<td><time class="dashboard-ts" datetime="{ts_attr}">{ts_body}</time></td>'
             f"<td>{html.escape(record.ip_address)}</td>"
             f"<td>{html.escape(record.method)}</td>"
             f"<td>{html.escape(record.path)}</td>"
+            f"<td>{model_cell}</td>"
             f'<td {status_style}>{record.status_code}</td>'
             f"<td>{record.prompt_tokens}</td>"
             f"<td>{record.completion_tokens}</td>"
@@ -192,7 +274,7 @@ def render_html(page: DashboardPageData) -> str:
         )
 
     if not rows_html:
-        rows_html = '<tr><td colspan="9">No data recorded yet.</td></tr>'
+        rows_html = '<tr><td colspan="10">No data recorded yet.</td></tr>'
 
     rps = page.rates.requests_per_second
     tps = page.rates.tokens_per_second
@@ -222,12 +304,18 @@ def render_html(page: DashboardPageData) -> str:
 
 <h2>Last 24 hours</h2>
 {_summary_dl(page.last_24_hours)}
+<h3>Usage by model (last 24 hours)</h3>
+{_model_usage_table(page.by_model_24h)}
 
 <h2>Last 7 days</h2>
 {_summary_dl(page.last_7_days)}
+<h3>Usage by model (last 7 days)</h3>
+{_model_usage_table(page.by_model_7d)}
 
 <h2>Lifetime</h2>
 {_summary_dl(page.lifetime)}
+<h3>Usage by model (lifetime)</h3>
+{_model_usage_table(page.by_model_lifetime)}
 
 <h2>Rates (last 60 seconds, UTC window)</h2>
 <dl>
@@ -243,6 +331,7 @@ def render_html(page: DashboardPageData) -> str:
   <th>IP</th>
   <th>Method</th>
   <th>Path</th>
+  <th>Model</th>
   <th>Status</th>
   <th>Prompt</th>
   <th>Completion</th>
@@ -273,8 +362,10 @@ async def dashboard() -> str:
     csv_path = os.getenv("AMPLIFY_STATS_CSV", os.path.join("logs", "token_stats.csv"))
     records = read_csv_records(csv_path)
     now_utc = datetime.now(timezone.utc)
-    last_24_hours = aggregate_stats(records_since(records, now_utc - timedelta(hours=24)))
-    last_7_days = aggregate_stats(records_since(records, now_utc - timedelta(days=7)))
+    rec_24 = records_since(records, now_utc - timedelta(hours=24))
+    rec_7 = records_since(records, now_utc - timedelta(days=7))
+    last_24_hours = aggregate_stats(rec_24)
+    last_7_days = aggregate_stats(rec_7)
     lifetime = aggregate_stats(records)
     rates = compute_rate_stats(records, now_utc)
     recent = records[-100:][::-1]
@@ -282,6 +373,9 @@ async def dashboard() -> str:
         last_24_hours=last_24_hours,
         last_7_days=last_7_days,
         lifetime=lifetime,
+        by_model_24h=aggregate_stats_by_model(rec_24),
+        by_model_7d=aggregate_stats_by_model(rec_7),
+        by_model_lifetime=aggregate_stats_by_model(records),
         rates=rates,
         recent=recent,
     )

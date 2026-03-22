@@ -42,7 +42,7 @@ Enable verbose logging for request/response debugging with:
 
 A token usage dashboard is available at the root endpoint:
 
-- `GET /` — plain HTML page sourced from `logs/token_stats.csv` (or `AMPLIFY_STATS_CSV`). It shows the same aggregate totals (requests, prompt, completion, and total tokens, plus errors) for the **last 24 hours**, **last 7 days**, and **lifetime**; **average requests per second** and **tokens per second** over the **last 60 seconds** (UTC window); and a table of the **100 most recent** requests. Timestamps in the table are shown in the **browser’s local timezone** (via a short inline script). The page **auto-refreshes every 5 seconds** (`meta refresh`).
+- `GET /` — plain HTML page sourced from `logs/token_stats.csv` (or `AMPLIFY_STATS_CSV`). It shows the same aggregate totals (requests, prompt, completion, and total tokens, plus errors) for the **last 24 hours**, **last 7 days**, and **lifetime**; **usage by model** (requests and token sums per requested model id) for each of those periods; **average requests per second** and **tokens per second** over the **last 60 seconds** (UTC window); and a table of the **100 most recent** requests including a **Model** column (requested model id from the JSON body; shown as `(unknown)` when empty). Timestamps in the table are shown in the **browser’s local timezone** (via a short inline script). The page **auto-refreshes every 5 seconds** (`meta refresh`).
 
 The CSV path can be overridden via the `AMPLIFY_STATS_CSV` environment variable.
 
@@ -327,12 +327,13 @@ Every HTTP request is recorded to a CSV file for usage monitoring and debugging.
 
 ### CSV Columns
 
-`timestamp, ip_address, method, path, status_code, prompt_tokens, completion_tokens, total_tokens, error`
+`timestamp, ip_address, method, path, status_code, prompt_tokens, completion_tokens, total_tokens, error, model`
 
 - `timestamp` — ISO 8601 UTC
 - `ip_address` — client IP (`X-Forwarded-For` header, or direct connection IP)
 - `prompt_tokens` / `completion_tokens` — estimated (4 characters per token); non-zero only for `POST /v1/chat/completions`
 - `total_tokens` — `prompt_tokens + completion_tokens`
 - `error` — empty on success; HTTP status or exception message on failure
+- `model` — top-level `model` string from the JSON request body when present (empty for GET, multipart, or bodies without `model`)
 
 
