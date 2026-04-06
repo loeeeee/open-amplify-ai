@@ -33,7 +33,19 @@ async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str,
             )
 
         amplify_models = data.get("data", {}).get("models", [])
-        models = [ModelInfo(id=m.get("id")) for m in amplify_models]
+        models = [
+            ModelInfo(
+                id=m.get("id"),
+                max_output_tokens=m.get("outputTokenLimit"),
+                context_length=m.get("inputContextWindow"),
+                max_model_len=(
+                    m.get("inputContextWindow", 0) + m.get("outputTokenLimit", 0)
+                    if m.get("inputContextWindow") and m.get("outputTokenLimit")
+                    else None
+                ),
+            )
+            for m in amplify_models
+        ]
 
         return {
             "object": "list",
@@ -43,6 +55,9 @@ async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str,
                     "object": m.object,
                     "created": m.created,
                     "owned_by": m.owned_by,
+                    "max_output_tokens": m.max_output_tokens,
+                    "context_length": m.context_length,
+                    "max_model_len": m.max_model_len,
                 }
                 for m in models
             ],
@@ -79,12 +94,24 @@ async def retrieve_model(
         if not match:
             raise HTTPException(status_code=404, detail=f"Model '{model}' not found")
 
-        info = ModelInfo(id=match.get("id"))
+        info = ModelInfo(
+            id=match.get("id"),
+            max_output_tokens=match.get("outputTokenLimit"),
+            context_length=match.get("inputContextWindow"),
+            max_model_len=(
+                match.get("inputContextWindow", 0) + match.get("outputTokenLimit", 0)
+                if match.get("inputContextWindow") and match.get("outputTokenLimit")
+                else None
+            ),
+        )
         return {
             "id": info.id,
             "object": info.object,
             "created": info.created,
             "owned_by": info.owned_by,
+            "max_output_tokens": info.max_output_tokens,
+            "context_length": info.context_length,
+            "max_model_len": info.max_model_len,
         }
     except HTTPException:
         raise

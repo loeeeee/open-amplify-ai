@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.types import ChatMessage, ChatCompletionRequest, AmplifyChatRequest
-from open_amplify_ai.utils import stream_amplify_chat, handle_upstream_error
+from open_amplify_ai.utils import stream_amplify_chat, handle_upstream_error, get_model_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ async def create_chat_completion(
             model=req_json.get("model", ""),
             messages=parsed_messages,
             temperature=req_json.get("temperature", 0.7),
-            max_tokens=req_json.get("max_tokens", 4000),
+            max_tokens=req_json.get("max_tokens", 10000),
             stream=req_json.get("stream", False),
             stream_options=req_json.get("stream_options"),
             tools=req_json.get("tools", None),
@@ -108,6 +108,27 @@ async def create_chat_completion(
     except Exception as e:
         logger.error("Invalid request format: %s", e)
         raise HTTPException(status_code=400, detail="Invalid request format")
+
+    # Validate max_tokens against model limits
+    model_metadata = await get_model_metadata(chat_request.model, headers)
+    if model_metadata:
+        output_limit = model_metadata.get("outputTokenLimit")
+        if output_limit and chat_request.max_tokens:
+            if chat_request.max_tokens > output_limit:
+                logger.warning(
+                    "Requested max_tokens (%d) exceeds model '%s' limit (%d)",
+                    chat_request.max_tokens,
+                    chat_request.model,
+                    output_limit,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Requested max_tokens ({chat_request.max_tokens}) exceeds "
+                        f"model '{chat_request.model}' output token limit ({output_limit}). "
+                        f"Please reduce max_tokens to {output_limit} or less."
+                    ),
+                )
 
     logger.info(
         "Creating chat completion with model %s (stream=%s)",

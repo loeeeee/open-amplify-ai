@@ -9,12 +9,17 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 @dataclass
 class ModelInfo:
-    """OpenAI-compatible model object."""
+    """OpenAI-compatible model object with Amplify extensions."""
 
     id: str
     object: str = "model"
     created: int = field(default_factory=lambda: int(time.time()))
     owned_by: str = "amplify-ai"
+    
+    # Extended fields from Amplify API
+    max_output_tokens: Optional[int] = None  # Amplify's outputTokenLimit
+    context_length: Optional[int] = None     # Amplify's inputContextWindow
+    max_model_len: Optional[int] = None      # Total tokens (context + output)
 
 
 @dataclass
@@ -32,7 +37,7 @@ class ChatCompletionRequest:
     model: str
     messages: List[ChatMessage]
     temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 4000
+    max_tokens: Optional[int] = 10000  # Raised from 4000 to 10000
     stream: Optional[bool] = False
     stream_options: Optional[Dict[str, Any]] = None
     tools: Optional[List[Dict[str, Any]]] = None

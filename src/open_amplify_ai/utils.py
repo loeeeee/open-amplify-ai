@@ -2,6 +2,7 @@
 import json
 import logging
 import re
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -14,6 +15,47 @@ from open_amplify_ai.types import (
     AmplifyFilesQueryData,
     AmplifyFilesQueryRequest,
 )
+
+logger = logging.getLogger(__name__)
+
+# Simple in-memory cache for model metadata
+_model_cache: Dict[str, Any] = {}
+_cache_timestamp: float = 0
+CACHE_TTL = 300  # 5 minutes
+
+
+async def get_model_metadata(
+    model_id: str, headers: Dict[str, str]
+) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve model metadata from Amplify API with caching.
+    
+    Returns model metadata including outputTokenLimit and inputContextWindow,
+    or None if the model is not found.
+    """
+    global _model_cache, _cache_timestamp
+    
+    current_time = time.time()
+    
+    # Refresh cache if stale
+    if current_time - _cache_timestamp > CACHE_TTL or not _model_cache:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{AMPLIFY_BASE_URL}/available_models",
+                    headers=headers,
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("success"):
+                    models = data.get("data", {}).get("models", [])
+                    _model_cache = {m["id"]: m for m in models}
+                    _cache_timestamp = current_time
+        except Exception as e:
+            logger.warning("Failed to refresh model cache: %s", e)
+    
+    return _model_cache.get(model_id)
 
 
 def handle_upstream_error(logger: logging.Logger, e: Exception, context_msg: str) -> HTTPException:
