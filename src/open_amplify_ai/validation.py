@@ -94,6 +94,46 @@ def validate_and_parse_request(req_json: Dict[str, Any]) -> InternalRequest:
             param="messages",
         )
     
+    # Validate max_tokens if present
+    if "max_tokens" in req_json:
+        max_tokens = req_json["max_tokens"]
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise create_error_response(
+                "Parameter 'max_tokens' must be a positive integer",
+                ErrorType.INVALID_REQUEST_ERROR,
+                400,
+                param="max_tokens",
+            )
+    
+    # Validate temperature if present
+    if "temperature" in req_json:
+        temperature = req_json["temperature"]
+        if not isinstance(temperature, (int, float)) or temperature < 0.0 or temperature > 2.0:
+            raise create_error_response(
+                "Parameter 'temperature' must be between 0.0 and 2.0",
+                ErrorType.INVALID_REQUEST_ERROR,
+                400,
+                param="temperature",
+            )
+    
+    # Validate stream_options requires stream=true
+    if "stream_options" in req_json and not req_json.get("stream", False):
+        raise create_error_response(
+            "Parameter 'stream_options' can only be used when 'stream' is true",
+            ErrorType.INVALID_REQUEST_ERROR,
+            400,
+            param="stream_options",
+        )
+    
+    # Validate tools is a list if present
+    if "tools" in req_json and not isinstance(req_json["tools"], list):
+        raise create_error_response(
+            "Parameter 'tools' must be a list",
+            ErrorType.INVALID_REQUEST_ERROR,
+            400,
+            param="tools",
+        )
+    
     # Check for unsupported parameters
     unsupported_found = {}
     for param in req_json.keys():
@@ -111,6 +151,15 @@ def validate_and_parse_request(req_json: Dict[str, Any]) -> InternalRequest:
     # Parse messages
     messages = []
     for i, msg in enumerate(req_json["messages"]):
+        # Validate message is a dict
+        if not isinstance(msg, dict):
+            raise create_error_response(
+                f"Invalid message at index {i}: message must be an object",
+                ErrorType.INVALID_REQUEST_ERROR,
+                400,
+                param=f"messages[{i}]",
+            )
+        
         try:
             internal_msg = parse_message(msg)
             messages.append(internal_msg)
@@ -136,8 +185,41 @@ def validate_and_parse_request(req_json: Dict[str, Any]) -> InternalRequest:
     if "tools" in req_json and req_json["tools"]:
         tools = []
         for i, tool in enumerate(req_json["tools"]):
+            # Validate tool structure
+            if not isinstance(tool, dict):
+                raise create_error_response(
+                    f"Invalid tool definition at index {i}: tool must be an object",
+                    ErrorType.INVALID_REQUEST_ERROR,
+                    400,
+                    param=f"tools[{i}]",
+                )
+            
+            if "type" not in tool:
+                raise create_error_response(
+                    f"Invalid tool definition at index {i}: missing required 'type' field",
+                    ErrorType.INVALID_REQUEST_ERROR,
+                    400,
+                    param=f"tools[{i}]",
+                )
+            
+            if tool["type"] != "function":
+                raise create_error_response(
+                    f"Invalid tool definition at index {i}: only 'function' type is supported",
+                    ErrorType.INVALID_REQUEST_ERROR,
+                    400,
+                    param=f"tools[{i}]",
+                )
+            
+            if "function" not in tool:
+                raise create_error_response(
+                    f"Invalid tool definition at index {i}: missing required 'function' field",
+                    ErrorType.INVALID_REQUEST_ERROR,
+                    400,
+                    param=f"tools[{i}]",
+                )
+            
             try:
-                tools.append(ToolDefinition(type=tool.get("type", "function"), function=tool.get("function", {})))
+                tools.append(ToolDefinition(type=tool["type"], function=tool["function"]))
             except Exception as e:
                 raise create_error_response(
                     f"Invalid tool definition at index {i}: {e}",
@@ -184,7 +266,7 @@ def parse_message(msg: Dict[str, Any]) -> InternalMessage:
     # Map role to internal enum
     try:
         if role_str == "developer":
-            role = MessageRole.DEVELOPER
+            raise ValueError("Role 'developer' is not supported by Amplify AI backend")
         elif role_str == "system":
             role = MessageRole.SYSTEM
         elif role_str == "user":
@@ -195,6 +277,8 @@ def parse_message(msg: Dict[str, Any]) -> InternalMessage:
             role = MessageRole.TOOL
         else:
             raise ValueError(f"Unknown role: {role_str}")
+    except ValueError:
+        raise
     except Exception:
         raise ValueError(f"Invalid role: {role_str}")
     
@@ -202,38 +286,49 @@ def parse_message(msg: Dict[str, Any]) -> InternalMessage:
     content_parts = []
     content_raw = msg.get("content")
     
-    if content_raw is not None:
-        if isinstance(content_raw, str):
-            # Simple string content
-            content_parts.append(ContentPart(type=ContentPartType.TEXT, text=content_raw))
-        elif isinstance(content_raw, list):
-            # Array content - validate each part
-            for part in content_raw:
-                if isinstance(part, str):
-                    content_parts.append(ContentPart(type=ContentPartType.TEXT, text=part))
-                elif isinstance(part, dict):
-                    part_type = part.get("type")
-                    if part_type == "text":
-                        content_parts.append(
-                            ContentPart(type=ContentPartType.TEXT, text=part.get("text", ""))
-                        )
-                    elif part_type == "image_url":
-                        # Reject unsupported content type
-                        raise ValueError(
-                            "Content type 'image_url' is not supported by Amplify AI backend"
-                        )
-                    elif part_type == "image_file":
-                        raise ValueError(
-                            "Content type 'image_file' is not supported by Amplify AI backend"
-                        )
-                    elif part_type == "audio":
-                        raise ValueError(
-                            "Content type 'audio' is not supported by Amplify AI backend"
-                        )
-                    else:
-                        raise ValueError(f"Unknown content part type: {part_type}")
+    # Validate content presence for non-assistant and non-tool messages
+    if content_raw is None:
+        # content=None is only allowed for assistant messages with tool_calls
+        if role == MessageRole.ASSISTANT and "tool_calls" in msg:
+            pass  # This is valid
+        else:
+            raise ValueError("Message content cannot be null for this role")
+    elif isinstance(content_raw, str):
+        # Simple string content (empty string is allowed)
+        content_parts.append(ContentPart(type=ContentPartType.TEXT, text=content_raw))
+    elif isinstance(content_raw, list):
+        # Array content - validate each part
+        if len(content_raw) == 0:
+            raise ValueError("Message content array cannot be empty")
+        
+        for part in content_raw:
+            if isinstance(part, str):
+                content_parts.append(ContentPart(type=ContentPartType.TEXT, text=part))
+            elif isinstance(part, dict):
+                part_type = part.get("type")
+                if part_type == "text":
+                    content_parts.append(
+                        ContentPart(type=ContentPartType.TEXT, text=part.get("text", ""))
+                    )
+                elif part_type == "image_url":
+                    # Reject unsupported content type
+                    raise ValueError(
+                        "Content type 'image_url' is not supported by Amplify AI backend"
+                    )
+                elif part_type == "image_file":
+                    raise ValueError(
+                        "Content type 'image_file' is not supported by Amplify AI backend"
+                    )
+                elif part_type == "audio":
+                    raise ValueError(
+                        "Content type 'audio' is not supported by Amplify AI backend"
+                    )
                 else:
-                    raise ValueError(f"Invalid content part: {part}")
+                    raise ValueError(f"Unknown content part type: {part_type}")
+            else:
+                raise ValueError(f"Invalid content part: {part}")
+    else:
+        raise ValueError(f"Invalid content type: {type(content_raw).__name__}")
     
     # Parse tool_calls if present (assistant messages)
     tool_calls = None

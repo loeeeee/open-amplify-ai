@@ -19,8 +19,8 @@ client = TestClient(app)
         # Missing messages
         (
             {"model": "gpt-4o"},
-            422,
-            "validation_error",
+            400,
+            "invalid_request_error",
         ),
         # messages is not a list
         (
@@ -52,8 +52,6 @@ client = TestClient(app)
             400,
             "invalid_request_error",
         ),
-        # Message with empty string content (should be accepted)
-        # This test expects success - will be handled differently
         # Message with content=[] (empty array)
         (
             {"model": "gpt-4o", "messages": [{"role": "user", "content": []}]},
@@ -81,8 +79,8 @@ client = TestClient(app)
         # max_tokens is not an integer
         (
             {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": "invalid"},
-            422,
-            "validation_error",
+            400,
+            "invalid_request_error",
         ),
         # temperature outside expected range (too high)
         (
@@ -114,8 +112,8 @@ client = TestClient(app)
                 "messages": [{"role": "user", "content": "Hi"}],
                 "tools": "not a list",
             },
-            422,
-            "validation_error",
+            400,
+            "invalid_request_error",
         ),
         # tools list with invalid tool shape
         (
@@ -135,9 +133,10 @@ def test_chat_validation_errors(request_body, expected_status, error_type):
     assert response.status_code == expected_status
     
     data = response.json()
-    assert "error" in data
-    assert data["error"]["type"] == error_type
-    assert "message" in data["error"]
+    assert "detail" in data
+    assert "error" in data["detail"]
+    assert data["detail"]["error"]["type"] == error_type
+    assert "message" in data["detail"]["error"]
 
 
 def test_chat_validation_empty_string_content_accepted(mocker):
@@ -196,7 +195,9 @@ def test_chat_validation_content_part_missing_type(mocker):
     )
     assert response.status_code == 400
     data = response.json()
-    assert "error" in data
+    assert "detail" in data
+    assert "error" in data["detail"]
+    assert data["detail"]["error"]["type"] == "invalid_request_error"
 
 
 def test_chat_validation_content_part_unsupported_type(mocker):
@@ -212,7 +213,9 @@ def test_chat_validation_content_part_unsupported_type(mocker):
     )
     assert response.status_code == 400
     data = response.json()
-    assert "error" in data
+    assert "detail" in data
+    assert "error" in data["detail"]
+    assert data["detail"]["error"]["type"] == "invalid_request_error"
 
 
 def test_chat_validation_temperature_boundary_values(mocker):

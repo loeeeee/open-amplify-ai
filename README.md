@@ -67,12 +67,17 @@ The FastAPI server exposes a subset of the OpenAI API under `/v1/*`, backed by A
 - `POST /v1/chat/completions`
   - Supports non-streaming and streaming responses (SSE `data:` lines)
   - Compatible with cline, openclaw, kilo, and similar tools
-  - Refactored implementation available in `chat_refactored.py` with improved:
+  - Enhanced request validation:
+    - Parameter validation: `max_tokens` (>0), `temperature` (0.0-2.0), `stream_options` (requires stream=true)
+    - Message validation: content type checking, role validation, empty content detection
+    - Tool validation: structure and type checking
+    - See [`docs-vibe/78-request-validation-improvements.md`](docs-vibe/78-request-validation-improvements.md) for details
+  - Refactored implementation with improved:
     - Strict request validation and explicit error handling
     - Deterministic tool calling with strong anchoring
     - Streaming state machine for clean mode transitions
     - Precise HTTP status code mapping
-    - See `docs-vibe/72-chat-endpoint-refactor-complete.md` for details
+    - See [`docs-vibe/72-chat-endpoint-refactor-complete.md`](docs-vibe/72-chat-endpoint-refactor-complete.md) for details
 
 ### Files
 
