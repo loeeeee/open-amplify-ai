@@ -169,6 +169,21 @@ def test_chat_completions_tool_call_parsing(mocker):
     req_body = {
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "List files in the dir"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files in a directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "recursive": {"type": "boolean"}
+                    },
+                    "required": ["path", "recursive"]
+                }
+            }
+        }],
     }
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200
@@ -186,7 +201,11 @@ def test_chat_completions_tool_call_parsing(mocker):
 
 
 def test_chat_completions_streaming(mocker):
-    """POST /v1/chat/completions with stream=True returns text/event-stream SSE."""
+    """POST /v1/chat/completions with stream=True returns text/event-stream SSE.
+    
+    Note: The refactored implementation only parses tool calls when tools are explicitly
+    provided in the request, which is more secure than the old implementation.
+    """
     lines = [
         'data: {"data":"Hello"}',
         'data: {"data":"{\\"command\\":\\"foo\\",\\"parameters\\":{}}"}',
@@ -201,6 +220,17 @@ def test_chat_completions_streaming(mocker):
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Hi"}],
         "stream": True,
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "foo",
+                "description": "A test function",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        }],
     }
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200
@@ -210,6 +240,7 @@ def test_chat_completions_streaming(mocker):
     assert "data:" in body
     assert "[DONE]" in body
     assert "Hello" in body
+    # With tools provided, tool calls should be parsed
     assert "tool_calls" in body
     assert "foo" in body
 
@@ -279,7 +310,7 @@ def test_chat_completions_tool_calls_json_format(mocker):
             },
             {
                 "role": "tool",
-                "name": "list_files",
+                "tool_call_id": "call_abc123",
                 "content": "file1.txt\nfile2.txt",
             },
             {"role": "user", "content": "Now read file1.txt"},
@@ -293,13 +324,15 @@ def test_chat_completions_tool_calls_json_format(mocker):
 
     assistant_msg = amplify_messages[1]
     assert assistant_msg["role"] == "assistant"
-    assert '{"tool": "list_files"' in assistant_msg["content"]
+    assert '"_tool_call": true' in assistant_msg["content"]
+    assert '"tool": "list_files"' in assistant_msg["content"]
     assert '"parameters"' in assistant_msg["content"]
     assert "[Tool Call:" not in assistant_msg["content"]
 
     tool_msg = amplify_messages[2]
     assert tool_msg["role"] == "user"
-    assert '{"tool_result": "list_files"' in tool_msg["content"]
+    assert '<TOOL_RESULT>' in tool_msg["content"]
+    assert 'file1.txt' in tool_msg["content"]
     assert "[Tool Result:" not in tool_msg["content"]
 
 
@@ -320,6 +353,20 @@ def test_chat_completions_legacy_tool_call_parsing(mocker):
     req_body = {
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Update the todo list"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "update_todo_list",
+                "description": "Update the todo list",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "todos": {"type": "string"}
+                    },
+                    "required": ["todos"]
+                }
+            }
+        }],
     }
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200
@@ -377,6 +424,18 @@ def test_chat_completions_xml_tool_call_parsing(mocker, xml_content, expected_na
     req_body = {
         "model": "us.anthropic.claude-opus-4-6-v1",
         "messages": [{"role": "user", "content": "Execute tool"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": expected_name,
+                "description": f"Test tool {expected_name}",
+                "parameters": {
+                    "type": "object",
+                    "properties": {k: {"type": "string" if isinstance(v, str) else "boolean"} for k, v in expected_args.items()},
+                    "required": list(expected_args.keys())
+                }
+            }
+        }],
     }
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200
@@ -407,6 +466,20 @@ def test_chat_completions_streaming_legacy_tool_call(mocker):
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Read the file"}],
         "stream": True,
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        }],
     }
     response = client.post("/v1/chat/completions", json=req_body)
     assert response.status_code == 200

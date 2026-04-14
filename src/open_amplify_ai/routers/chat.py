@@ -4,7 +4,7 @@ Refactored to use a 5-stage pipeline:
 1. Strict OpenAI request validation
 2. Normalize to internal IR
 3. Render to Amplify format
-4. Parse response to internal IR
+4. Parse response to internal IR  
 5. Render to OpenAI format
 """
 import json
@@ -68,203 +68,153 @@ async def create_chat_completion(
     except Exception as e:
         logger.error("Validation error: %s", e)
         raise create_validation_error(f"Request validation failed: {e}")
-
+    
     # Validate max_tokens against model limits
-    model_metadata = await get_model_metadata(chat_request.model, headers)
+    model_metadata = await get_model_metadata(internal_req.model, headers)
     if model_metadata:
         output_limit = model_metadata.get("outputTokenLimit")
-        if output_limit and chat_request.max_tokens:
-            if chat_request.max_tokens > output_limit:
+        context_limit = model_metadata.get("inputContextWindow")
+        
+        if output_limit and internal_req.max_tokens:
+            if internal_req.max_tokens > output_limit:
                 logger.warning(
                     "Requested max_tokens (%d) exceeds model '%s' limit (%d)",
-                    chat_request.max_tokens,
-                    chat_request.model,
+                    internal_req.max_tokens,
+                    internal_req.model,
                     output_limit,
                 )
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Requested max_tokens ({chat_request.max_tokens}) exceeds "
-                        f"model '{chat_request.model}' output token limit ({output_limit}). "
-                        f"Please reduce max_tokens to {output_limit} or less."
-                    ),
+                raise create_validation_error(
+                    f"Requested max_tokens ({internal_req.max_tokens}) exceeds "
+                    f"model '{internal_req.model}' output token limit ({output_limit}). "
+                    f"Please reduce max_tokens to {output_limit} or less.",
+                    param="max_tokens",
                 )
-
+    
     logger.info(
-        "Creating chat completion with model %s (stream=%s)",
-        chat_request.model,
-        chat_request.stream,
+        "Creating chat completion with model %s (stream=%s, request_id=%s)",
+        internal_req.model,
+        internal_req.stream,
+        request_id,
     )
-
-    amplify_request: AmplifyChatRequest = {
-        "data": {
-            "temperature": chat_request.temperature,
-            "max_tokens": chat_request.max_tokens,
-            "dataSources": [],
-            "messages": [
-                {"role": m.role, "content": m.content} for m in chat_request.messages
-            ],
-            "options": {
-                "model": {"id": chat_request.model},
-            },
-        }
-    }
-
+    
+    # Stage 2 & 3: Transform internal IR to Amplify format
+    try:
+        amplify_request = internal_request_to_amplify(internal_req)
+    except Exception as e:
+        logger.error("Failed to transform request to Amplify format: %s", e)
+        raise create_validation_error(f"Request transformation failed: {e}")
+    
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
-
-    if chat_request.stream:
-        logger.info("Streaming response requested for model %s", chat_request.model)
-
+    
+    # Handle streaming
+    if internal_req.stream:
+        logger.info("Streaming response requested for model %s", internal_req.model)
+        
         include_usage = bool(
-            chat_request.stream_options
-            and chat_request.stream_options.get("include_usage")
+            internal_req.stream_options
+            and internal_req.stream_options.get("include_usage")
         )
-
-        return StreamingResponse(
-            stream_amplify_chat(
-                amplify_request=amplify_request,
-                headers=headers,
-                model=chat_request.model,
-                completion_id=completion_id,
-                created=created,
-                include_usage=include_usage,
-            ),
-            media_type="text/event-stream",
-        )
-
+        
+        try:
+            return StreamingResponse(
+                stream_amplify_response(
+                    amplify_request=amplify_request,
+                    headers=headers,
+                    model=internal_req.model,
+                    completion_id=completion_id,
+                    created=created,
+                    tools=internal_req.tools,
+                    include_usage=include_usage,
+                ),
+                media_type="text/event-stream",
+            )
+        except httpx.HTTPError as e:
+            raise normalize_upstream_error(e, "streaming chat completion", request_id)
+    
+    # Handle non-streaming
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0, read=120.0)
+        ) as client:
             response = await client.post(
                 f"{AMPLIFY_BASE_URL}/chat",
                 headers=headers,
                 json=amplify_request,
             )
             response.raise_for_status()
-
+        
+        # Stage 4: Parse Amplify response
         try:
             data = response.json()
             content = data.get("data", "")
         except Exception:
             content = response.text
-
-        tool_calls = None
-
-        if isinstance(content, str) and "[Tool Call:" in content:
-            try:
-                match = re.search(
-                    r"\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(.+)",
-                    content,
-                    re.DOTALL,
-                )
-                if match:
-                    name = match.group(1).strip()
-                    params_str = match.group(2).strip()
+        
+        # Stage 5: Parse tool calls using deterministic parser
+        parse_result = parse_tool_calls(content, internal_req.tools)
+        
+        if parse_result.is_tool_call:
+            # Validate tool calls if tools were provided
+            if internal_req.tools:
+                for tool_call in parse_result.tool_calls:
                     try:
-                        params = json.loads(params_str, strict=False)
+                        args = json.loads(tool_call.function_arguments)
+                        is_valid = validate_tool_output(
+                            tool_call.function_name,
+                            args,
+                            internal_req.tools,
+                        )
+                        if not is_valid:
+                            logger.warning(
+                                "Tool call validation failed for '%s'",
+                                tool_call.function_name,
+                            )
                     except json.JSONDecodeError:
-                        params = {}
-                    tool_calls = [
-                        {
-                            "id": f"call_{uuid.uuid4().hex[:12]}",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(params),
-                            },
-                        }
-                    ]
-                    content = None
-            except Exception as parse_err:
-                logger.debug("Exception parsing legacy tool call format: %s", parse_err)
-
-        if tool_calls is None and isinstance(content, str) and (
-            '"tool"' in content or '"command"' in content
-        ):
-            try:
-                match = re.search(r"(\{[\s\S]*\})", content)
-                json_str = match.group(1) if match else content
-                parsed_content = json.loads(json_str, strict=False)
-                name = parsed_content.get("tool") or parsed_content.get("command")
-                if name:
-                    tool_calls = [
-                        {
-                            "id": f"call_{uuid.uuid4().hex[:12]}",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(
-                                    parsed_content.get("parameters", {})
-                                ),
-                            },
-                        }
-                    ]
-                    content = None
-            except Exception as parse_err:
-                logger.debug("Exception parsing JSON tool call: %s", parse_err)
-
-        # Parse XML format tool calls (for Opus model)
-        if tool_calls is None and isinstance(content, str) and (
-            "<tool_call>" in content or "<tool_use>" in content
-        ):
-            try:
-                # Try to extract XML block
-                xml_match = re.search(
-                    r"<tool_(?:call|use)>([\s\S]*?)</tool_(?:call|use)>",
-                    content,
-                    re.DOTALL,
-                )
-                if xml_match:
-                    xml_content = f"<root>{xml_match.group(0)}</root>"
-                    root = ET.fromstring(xml_content)
-                    tool_elem = root.find(".//tool_call")
-                    if tool_elem is None:
-                        tool_elem = root.find(".//tool_use")
-                    if tool_elem is not None:
-                        tool_name_elem = tool_elem.find("tool_name")
-                        params_elem = tool_elem.find("parameters")
-                        if tool_name_elem is not None:
-                            name = tool_name_elem.text or ""
-                            params = {}
-                            if params_elem is not None:
-                                for child in params_elem:
-                                    # Convert "false"/"true" strings to boolean
-                                    value = child.text or ""
-                                    if value.lower() == "false":
-                                        params[child.tag] = False
-                                    elif value.lower() == "true":
-                                        params[child.tag] = True
-                                    else:
-                                        params[child.tag] = value
-                            tool_calls = [
-                                {
-                                    "id": f"call_{uuid.uuid4().hex[:12]}",
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": json.dumps(params),
-                                    },
-                                }
-                            ]
-                            content = None
-            except Exception as parse_err:
-                logger.debug("Exception parsing XML tool call: %s", parse_err)
-
-        message_obj: dict[str, Any] = {"role": "assistant", "content": content}
-        if tool_calls is not None:
-            message_obj["tool_calls"] = tool_calls
-
+                        logger.warning(
+                            "Invalid JSON in tool call arguments for '%s'",
+                            tool_call.function_name,
+                        )
+            
+            # Build tool_calls response
+            tool_calls_json = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function_name,
+                        "arguments": tc.function_arguments,
+                    },
+                }
+                for tc in parse_result.tool_calls
+            ]
+            
+            message_obj = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": tool_calls_json,
+            }
+            finish_reason = "tool_calls"
+        else:
+            # Normal content response
+            message_obj = {
+                "role": "assistant",
+                "content": content if isinstance(content, str) else str(content),
+            }
+            finish_reason = "stop"
+        
+        # Build OpenAI response
         return {
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": chat_request.model,
+            "model": internal_req.model,
             "system_fingerprint": "",
             "choices": [
                 {
                     "index": 0,
                     "message": message_obj,
-                    "finish_reason": "tool_calls" if tool_calls else "stop",
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {
@@ -273,5 +223,12 @@ async def create_chat_completion(
                 "total_tokens": 0,
             },
         }
+    
     except httpx.HTTPError as e:
-        raise handle_upstream_error(logger, e, "chat completion")
+        raise normalize_upstream_error(e, "chat completion", request_id)
+    except Exception as e:
+        logger.error("Unexpected error in chat completion: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"message": f"Internal server error: {e}", "type": "api_error"}},
+        )

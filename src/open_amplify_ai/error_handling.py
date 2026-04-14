@@ -105,16 +105,16 @@ def normalize_upstream_error(
         logger.error("Response body: %s", error_detail[:1000])  # Limit log size
     
     # Log request details if available
-    if hasattr(error, "request"):
-        try:
-            req = error.request
+    try:
+        if hasattr(error, "_request") and error._request is not None:
+            req = error._request
             logger.error(
                 "Request: %s %s",
                 req.method if hasattr(req, "method") else "?",
                 req.url if hasattr(req, "url") else "?",
             )
-        except Exception:
-            pass
+    except Exception:
+        pass
     
     # Build OpenAI-compatible error response
     error_response = {

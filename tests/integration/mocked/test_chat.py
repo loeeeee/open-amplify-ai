@@ -331,6 +331,21 @@ def test_client_tool_call_detection(mocker: Any) -> None:
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "List files in home dir"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files in a directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "recursive": {"type": "boolean"}
+                    },
+                    "required": ["path", "recursive"]
+                }
+            }
+        }],
     })
     assert response.status_code == 200
 
@@ -363,6 +378,21 @@ def test_client_tool_call_detection_with_markdown_wrapper(mocker: Any) -> None:
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "List files in home dir"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "list_files",
+                "description": "List files in a directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "recursive": {"type": "boolean"}
+                    },
+                    "required": ["path", "recursive"]
+                }
+            }
+        }],
     })
     assert response.status_code == 200
 
@@ -389,6 +419,21 @@ def test_client_tool_call_detection_with_unescaped_newlines(mocker: Any) -> None
     response = client.post("/v1/chat/completions", json={
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Write this file"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "write_to_file",
+                "description": "Write content to a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        }],
     })
     assert response.status_code == 200
 
@@ -426,6 +471,20 @@ def test_client_streaming_tool_call(mocker: Any) -> None:
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Read the file"}],
         "stream": True,
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        }],
     })
     assert response.status_code == 200
 
