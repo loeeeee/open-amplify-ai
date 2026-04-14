@@ -4,6 +4,7 @@ import logging
 import re
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import httpx
@@ -242,6 +243,53 @@ async def create_chat_completion(
                     content = None
             except Exception as parse_err:
                 logger.debug("Exception parsing JSON tool call: %s", parse_err)
+
+        # Parse XML format tool calls (for Opus model)
+        if tool_calls is None and isinstance(content, str) and (
+            "<tool_call>" in content or "<tool_use>" in content
+        ):
+            try:
+                # Try to extract XML block
+                xml_match = re.search(
+                    r"<tool_(?:call|use)>([\s\S]*?)</tool_(?:call|use)>",
+                    content,
+                    re.DOTALL,
+                )
+                if xml_match:
+                    xml_content = f"<root>{xml_match.group(0)}</root>"
+                    root = ET.fromstring(xml_content)
+                    tool_elem = root.find(".//tool_call")
+                    if tool_elem is None:
+                        tool_elem = root.find(".//tool_use")
+                    if tool_elem is not None:
+                        tool_name_elem = tool_elem.find("tool_name")
+                        params_elem = tool_elem.find("parameters")
+                        if tool_name_elem is not None:
+                            name = tool_name_elem.text or ""
+                            params = {}
+                            if params_elem is not None:
+                                for child in params_elem:
+                                    # Convert "false"/"true" strings to boolean
+                                    value = child.text or ""
+                                    if value.lower() == "false":
+                                        params[child.tag] = False
+                                    elif value.lower() == "true":
+                                        params[child.tag] = True
+                                    else:
+                                        params[child.tag] = value
+                            tool_calls = [
+                                {
+                                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": json.dumps(params),
+                                    },
+                                }
+                            ]
+                            content = None
+            except Exception as parse_err:
+                logger.debug("Exception parsing XML tool call: %s", parse_err)
 
         message_obj: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls is not None:

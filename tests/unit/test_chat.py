@@ -335,6 +335,63 @@ def test_chat_completions_legacy_tool_call_parsing(mocker):
     assert "todos" in args
 
 
+@pytest.mark.parametrize(
+    "xml_content,expected_name,expected_args",
+    [
+        (
+            '<tool_call>\n<tool_name>list_files</tool_name>\n<parameters>\n<path>docs-vibe</path>\n<recursive>false</recursive>\n</parameters>\n</tool_call>',
+            "list_files",
+            {"path": "docs-vibe", "recursive": False},
+        ),
+        (
+            '<tool_use>\n<tool_name>update_todo_list</tool_name>\n<parameters>\n<todos>[x] Done\n[ ] Next</todos>\n</parameters>\n</tool_use>',
+            "update_todo_list",
+            {"todos": "[x] Done\n[ ] Next"},
+        ),
+        (
+            '<tool_call>\n<tool_name>read_file</tool_name>\n<parameters>\n<path>src/main.py</path>\n</parameters>\n</tool_call>',
+            "read_file",
+            {"path": "src/main.py"},
+        ),
+        (
+            '<tool_call>\n<tool_name>execute_command</tool_name>\n<parameters>\n<command>ls -la</command>\n<cwd></cwd>\n</parameters>\n</tool_call>',
+            "execute_command",
+            {"command": "ls -la", "cwd": ""},
+        ),
+    ],
+)
+def test_chat_completions_xml_tool_call_parsing(mocker, xml_content, expected_name, expected_args):
+    """POST /v1/chat/completions parses XML format tool calls from Opus model."""
+    mock_response = mocker.Mock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = mocker.Mock()
+    mock_response.json.return_value = {
+        "success": True,
+        "data": xml_content,
+    }
+    mocker.patch(
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, mock_response),
+    )
+
+    req_body = {
+        "model": "us.anthropic.claude-opus-4-6-v1",
+        "messages": [{"role": "user", "content": "Execute tool"}],
+    }
+    response = client.post("/v1/chat/completions", json=req_body)
+    assert response.status_code == 200
+    data = response.json()
+    choice = data["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert "tool_calls" in choice["message"]
+
+    tool_call = choice["message"]["tool_calls"][0]
+    assert tool_call["type"] == "function"
+    assert tool_call["function"]["name"] == expected_name
+    args = json.loads(tool_call["function"]["arguments"])
+    assert args == expected_args
+
+
 def test_chat_completions_streaming_legacy_tool_call(mocker):
     """POST /v1/chat/completions defensively parses legacy [Tool Call: ...] in streaming."""
     lines = [
