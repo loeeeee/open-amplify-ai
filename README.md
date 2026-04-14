@@ -231,7 +231,7 @@ The prober:
 - Reads `AMPLIFY_AI_TOKEN` and `AMPLIFY_AI_EMAIL` from `.env`
 - Probes all relevant endpoints (including conflict variants for `/chat`, `/files/upload`, and `/files/tags/list`)
 - Generates:
-  - `docs-vibe/17_amplify_api_report.md` — full diagnostic report
+  - `docs-vibe/66_amplify_ai_probing_report.md` — full diagnostic report
   - `docs/amplify_api_probed.md` — concise, verified API reference
 
 Email addresses in generated reports are redacted.

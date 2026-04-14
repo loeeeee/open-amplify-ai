@@ -426,7 +426,7 @@ def redact_email(text: str, email: str) -> str:
 
 def write_detailed_report(results: List[Dict[str, Any]], email: str) -> None:
     """Write the full diagnostic report to docs-vibe/."""
-    report_path = 'docs-vibe/17_amplify_api_report.md'
+    report_path = 'docs-vibe/66_amplify_ai_probing_report.md'
     try:
         with open(report_path, 'w') as f:
             f.write("# Amplify AI API Endpoint Probing Report\n\n")
