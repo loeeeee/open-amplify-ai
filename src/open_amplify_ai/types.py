@@ -1,10 +1,165 @@
 """Data structures used for requests, responses, and API mapping."""
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, TypedDict
+from enum import Enum
+from typing import Any, Dict, List, Optional, TypedDict, Union
 
 # ---------------------------------------------------------------------------
-# OpenAI Data structures
+# Internal Representation (IR) - Core Types
+# ---------------------------------------------------------------------------
+
+class MessageRole(str, Enum):
+    """Explicit message roles with provenance preservation."""
+    SYSTEM = "system"
+    DEVELOPER = "developer"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
+class ContentPartType(str, Enum):
+    """Content part types with explicit support matrix."""
+    TEXT = "text"
+    IMAGE_URL = "image_url"
+    IMAGE_FILE = "image_file"
+    AUDIO = "audio"
+    FILE = "file"
+
+
+@dataclass
+class ContentPart:
+    """Single content part with type information."""
+    type: ContentPartType
+    text: Optional[str] = None
+    image_url: Optional[Dict[str, Any]] = None
+    image_file: Optional[str] = None
+    audio: Optional[Dict[str, Any]] = None
+    file: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ToolCall:
+    """Tool call with preserved ID for deterministic mapping."""
+    id: str
+    type: str  # Always "function" for now
+    function_name: str
+    function_arguments: str  # JSON string
+
+
+@dataclass
+class ToolResult:
+    """Tool result with provenance and linkage."""
+    tool_call_id: str
+    tool_name: str
+    content: str
+    is_error: bool = False
+
+
+@dataclass
+class InternalMessage:
+    """Internal message representation preserving all semantic information."""
+    role: MessageRole
+    content_parts: List[ContentPart] = field(default_factory=list)
+    tool_calls: Optional[List[ToolCall]] = None
+    tool_result: Optional[ToolResult] = None
+    name: Optional[str] = None  # For tool messages
+    
+    def get_text_content(self) -> str:
+        """Extract concatenated text from content parts."""
+        return "".join(
+            part.text for part in self.content_parts 
+            if part.type == ContentPartType.TEXT and part.text
+        )
+    
+    def has_unsupported_content(self) -> bool:
+        """Check if message contains unsupported content types."""
+        return any(
+            part.type != ContentPartType.TEXT 
+            for part in self.content_parts
+        )
+
+
+@dataclass
+class ToolDefinition:
+    """Tool definition with schema for validation."""
+    type: str
+    function: Dict[str, Any]
+    
+    def get_name(self) -> str:
+        """Extract tool name."""
+        return self.function.get("name", "")
+    
+    def get_schema(self) -> Dict[str, Any]:
+        """Extract parameter schema."""
+        return self.function.get("parameters", {})
+
+
+@dataclass
+class InternalRequest:
+    """Internal request IR preserving all OpenAI request information."""
+    model: str
+    messages: List[InternalMessage]
+    temperature: float = 0.7
+    max_tokens: int = 10000
+    top_p: Optional[float] = None
+    n: Optional[int] = None
+    stop: Optional[Union[str, List[str]]] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    seed: Optional[int] = None
+    response_format: Optional[Dict[str, Any]] = None
+    tools: Optional[List[ToolDefinition]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    parallel_tool_calls: Optional[bool] = None
+    user: Optional[str] = None
+    logprobs: Optional[bool] = None
+    logit_bias: Optional[Dict[str, float]] = None
+    stream: bool = False
+    stream_options: Optional[Dict[str, Any]] = None
+    
+    # Unsupported parameters tracking
+    unsupported_params: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class InternalResponse:
+    """Internal response IR before OpenAI formatting."""
+    content: Optional[str]
+    tool_calls: Optional[List[ToolCall]]
+    finish_reason: str
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Error Types
+# ---------------------------------------------------------------------------
+
+class ErrorType(str, Enum):
+    """OpenAI-compatible error types."""
+    INVALID_REQUEST_ERROR = "invalid_request_error"
+    AUTHENTICATION_ERROR = "authentication_error"
+    PERMISSION_ERROR = "permission_error"
+    NOT_FOUND_ERROR = "not_found_error"
+    RATE_LIMIT_ERROR = "rate_limit_error"
+    API_ERROR = "api_error"
+    TIMEOUT_ERROR = "timeout_error"
+    SERVICE_UNAVAILABLE_ERROR = "service_unavailable_error"
+
+
+@dataclass
+class ErrorResponse:
+    """Structured error response matching OpenAI format."""
+    message: str
+    type: ErrorType
+    param: Optional[str] = None
+    code: Optional[str] = None
+    internal_request_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Data structures (Legacy - kept for compatibility)
 # ---------------------------------------------------------------------------
 
 @dataclass
