@@ -1,99 +1,554 @@
 """Deterministic tool call parsing from Amplify responses."""
+import hashlib
 import json
 import logging
 import re
-import uuid
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from open_amplify_ai.types import InternalResponse, ToolCall, ToolDefinition
+from open_amplify_ai.types import ToolCall, ToolDefinition
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Candidate:
+    """A detected but not yet validated tool call candidate with its span."""
+    start: int
+    end: int
+    parser_used: str
+    function_name: str
+    arguments: Any  # dict, pre-parsed
+    raw: str
+
+
+@dataclass
 class ToolParseResult:
-    """Result of attempting to parse a tool call."""
-    
-    def __init__(
-        self,
-        is_tool_call: bool,
-        tool_calls: Optional[List[ToolCall]] = None,
-        remaining_content: Optional[str] = None,
-        parser_used: Optional[str] = None,
-    ):
-        self.is_tool_call = is_tool_call
-        self.tool_calls = tool_calls or []
-        self.remaining_content = remaining_content
-        self.parser_used = parser_used
+    """Result of attempting to parse tool calls from content."""
+    is_tool_call: bool
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    remaining_content: str = ""
+    parser_used: Optional[str] = None
 
 
+@dataclass
 class MixedOutputResult:
     """Result of handling mixed output (text + tool calls)."""
-    
-    def __init__(
-        self,
-        has_tool_calls: bool,
-        content: Optional[str] = None,
-        tool_calls: Optional[List[ToolCall]] = None,
-        validation_passed: bool = True,
-        fallback_reason: Optional[str] = None,
-    ):
-        self.has_tool_calls = has_tool_calls
-        self.content = content
-        self.tool_calls = tool_calls or []
-        self.validation_passed = validation_passed
-        self.fallback_reason = fallback_reason
+    has_tool_calls: bool
+    content: str = ""
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    validation_passed: bool = True
+    fallback_reason: Optional[str] = None
 
+
+# ---------------------------------------------------------------------------
+# Stable ID generation
+# ---------------------------------------------------------------------------
+
+def stable_tool_call_id(name: str, args: dict, ordinal: int) -> str:
+    """
+    Generate a stable, deterministic tool call ID from content.
+
+    The ID is derived from a normalized JSON payload so that the same
+    tool call at the same position always produces the same ID.
+    This enables deterministic deduplication and caching.
+    """
+    payload = json.dumps(
+        {"name": name, "args": args, "ordinal": ordinal},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+    return f"call_{digest}"
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction helper
+# ---------------------------------------------------------------------------
+
+def extract_json_objects(content: str) -> List[Tuple[str, int, int]]:
+    """
+    Extract all potential JSON objects from a string by counting braces.
+
+    Returns a list of tuples: (json_string, start_index, end_index).
+    """
+    results = []
+    brace_level = 0
+    in_string = False
+    escape_next = False
+    start_idx = -1
+
+    for i, char in enumerate(content):
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == "\\":
+            escape_next = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char == "{":
+                if brace_level == 0:
+                    start_idx = i
+                brace_level += 1
+            elif char == "}":
+                brace_level -= 1
+                if brace_level == 0 and start_idx != -1:
+                    json_str = content[start_idx : i + 1]
+                    results.append((json_str, start_idx, i + 1))
+                    start_idx = -1
+                elif brace_level < 0:
+                    # Malformed, reset
+                    brace_level = 0
+                    start_idx = -1
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Candidate detectors
+# Each function returns List[Candidate].  No validation is performed here.
+# ---------------------------------------------------------------------------
+
+def detect_canonical_candidates(content: str) -> List[Candidate]:
+    """
+    Detect canonical PROTOCOL_V1 tool call candidates.
+
+    Format: {"_tool_call": true, "id": "call_xxx", "tool": "name", "parameters": {...}}
+
+    The strong anchor is the presence of the "_tool_call" key.  Both
+    whole-message and embedded variants are supported, because the
+    "_tool_call" marker is unambiguous.
+
+    Returns a list of Candidate objects (may be empty).
+    """
+    if '"_tool_call"' not in content and "'_tool_call'" not in content:
+        return []
+
+    candidates: List[Candidate] = []
+
+    # Attempt whole-message parse first
+    try:
+        parsed = json.loads(content.strip())
+        if (
+            isinstance(parsed, dict)
+            and parsed.get("_tool_call")
+            and parsed.get("tool")
+        ):
+            tool_name = parsed["tool"]
+            args = parsed.get("parameters", {})
+            if isinstance(args, dict):
+                candidates.append(
+                    Candidate(
+                        start=0,
+                        end=len(content),
+                        parser_used="canonical_v1",
+                        function_name=tool_name,
+                        arguments=args,
+                        raw=content,
+                    )
+                )
+                return candidates
+    except json.JSONDecodeError:
+        pass
+
+    # Embedded variant: scan all JSON objects in text
+    for json_str, start_idx, end_idx in extract_json_objects(content):
+        try:
+            parsed = json.loads(json_str)
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("_tool_call")
+                and parsed.get("tool")
+            ):
+                tool_name = parsed["tool"]
+                args = parsed.get("parameters", {})
+                if isinstance(args, dict):
+                    candidates.append(
+                        Candidate(
+                            start=start_idx,
+                            end=end_idx,
+                            parser_used="canonical_v1_embedded",
+                            function_name=tool_name,
+                            arguments=args,
+                            raw=json_str,
+                        )
+                    )
+        except json.JSONDecodeError:
+            continue
+
+    return candidates
+
+
+def detect_legacy_candidates(content: str) -> List[Candidate]:
+    """
+    Detect legacy format tool call candidates.
+
+    Format: [Tool Call: name]\nParameters: {...}
+
+    Whole-message only: the trimmed content must start with "[Tool Call:".
+    This prevents promoting embedded legacy blocks inside explanatory prose.
+
+    Returns a list of Candidate objects (may be empty).
+    """
+    if not content.strip().startswith("[Tool Call:"):
+        return []
+
+    try:
+        match = re.match(
+            r"\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(\{[\s\S]*?\})(?:\n\n|$)",
+            content,
+            re.DOTALL,
+        )
+        if not match:
+            return []
+
+        name = match.group(1).strip()
+        params_str = match.group(2).strip()
+
+        try:
+            args = json.loads(params_str)
+        except json.JSONDecodeError:
+            logger.debug("Legacy format: invalid JSON in parameters block")
+            return []
+
+        if not isinstance(args, dict):
+            logger.debug("Legacy format: parameters is not a dict")
+            return []
+
+        return [
+            Candidate(
+                start=0,
+                end=match.end(),
+                parser_used="legacy",
+                function_name=name,
+                arguments=args,
+                raw=match.group(0),
+            )
+        ]
+
+    except Exception as exc:
+        logger.debug("Legacy format detection failed: %s", exc)
+        return []
+
+
+def detect_json_candidates(content: str) -> List[Candidate]:
+    """
+    Detect JSON format tool call candidates.
+
+    Format: {"tool": "name", "parameters": {...}}
+             or {"command": "name", "parameters": {...}}
+
+    Whole-message only: the entire trimmed content must parse as a single
+    JSON object.  Embedded JSON blocks inside explanatory prose are NOT
+    promoted, because the anchor is too weak to avoid false positives.
+
+    The 'parameters' key is required.  A dict with 'tool' but without
+    'parameters' is rejected as malformed.
+
+    Returns a list of Candidate objects (may be empty).
+    """
+    if '"tool"' not in content and '"command"' not in content:
+        return []
+
+    try:
+        parsed = json.loads(content.strip())
+    except json.JSONDecodeError:
+        # Not a whole-message JSON; do not scan embedded blocks.
+        return []
+
+    if not isinstance(parsed, dict):
+        return []
+
+    name = parsed.get("tool") or parsed.get("command")
+    if not name:
+        return []
+
+    # Require explicit 'parameters' key to avoid silently using {}
+    if "parameters" not in parsed:
+        logger.debug(
+            "JSON format: 'parameters' key missing for tool '%s', rejecting as malformed",
+            name,
+        )
+        return []
+
+    args = parsed["parameters"]
+    if not isinstance(args, dict):
+        logger.debug(
+            "JSON format: 'parameters' is not a dict for tool '%s', rejecting",
+            name,
+        )
+        return []
+
+    return [
+        Candidate(
+            start=0,
+            end=len(content),
+            parser_used="json",
+            function_name=name,
+            arguments=args,
+            raw=content,
+        )
+    ]
+
+
+def detect_xml_candidates(content: str) -> List[Candidate]:
+    """
+    Detect XML format tool call candidates.
+
+    Format: <tool_call><tool_name>name</tool_name><parameters>...</parameters></tool_call>
+            or <tool_use>...</tool_use>
+
+    Note: XML parsing is lossy for complex types (numbers, null, nested
+    structures).  Only string booleans are coerced.  This format is
+    provided as a compatibility fallback only.
+
+    Returns a list of Candidate objects (may be empty).
+    """
+    if "<tool_call>" not in content and "<tool_use>" not in content:
+        return []
+
+    try:
+        xml_match = re.search(
+            r"<tool_(?:call|use)>[\s\S]*?</tool_(?:call|use)>",
+            content,
+            re.DOTALL,
+        )
+        if not xml_match:
+            return []
+
+        xml_content = f"<root>{xml_match.group(0)}</root>"
+        root = ET.fromstring(xml_content)
+
+        tool_elem = root.find(".//tool_call")
+        if tool_elem is None:
+            tool_elem = root.find(".//tool_use")
+        if tool_elem is None:
+            return []
+
+        tool_name_elem = tool_elem.find("tool_name")
+        if tool_name_elem is None or not tool_name_elem.text:
+            return []
+
+        name = tool_name_elem.text.strip()
+
+        # Parse parameters (lossy: strings only, booleans coerced)
+        args: Dict[str, Any] = {}
+        params_elem = tool_elem.find("parameters")
+        if params_elem is not None:
+            for child in params_elem:
+                value = child.text or ""
+                if value.lower() == "false":
+                    args[child.tag] = False
+                elif value.lower() == "true":
+                    args[child.tag] = True
+                else:
+                    args[child.tag] = value
+
+        return [
+            Candidate(
+                start=xml_match.start(),
+                end=xml_match.end(),
+                parser_used="xml",
+                function_name=name,
+                arguments=args,
+                raw=xml_match.group(0),
+            )
+        ]
+
+    except Exception as exc:
+        logger.debug("XML format detection failed: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Single validation layer
+# ---------------------------------------------------------------------------
+
+def validate_candidates(
+    candidates: List[Candidate],
+    tools: List[ToolDefinition],
+) -> Tuple[List[Candidate], List[Candidate]]:
+    """
+    Validate a list of candidates against declared tools.
+
+    Returns (promoted, rejected) where:
+    - promoted: candidates that pass all checks and become executable tool calls
+    - rejected: candidates that failed validation
+
+    Validation checks:
+    1. Tool name exists in declared tools
+    2. Arguments are a dict (already pre-parsed by detectors)
+    """
+    promoted: List[Candidate] = []
+    rejected: List[Candidate] = []
+
+    for candidate in candidates:
+        tool_exists = any(t.get_name() == candidate.function_name for t in tools)
+        if not tool_exists:
+            logger.warning(
+                "Tool '%s' not in declared tools, excluding from response",
+                candidate.function_name,
+            )
+            rejected.append(candidate)
+            continue
+
+        if not isinstance(candidate.arguments, dict):
+            logger.warning(
+                "Tool '%s' arguments are not a dict, excluding from response",
+                candidate.function_name,
+            )
+            rejected.append(candidate)
+            continue
+
+        promoted.append(candidate)
+
+    return promoted, rejected
+
+
+# ---------------------------------------------------------------------------
+# Content reconstruction
+# ---------------------------------------------------------------------------
+
+def reconstruct_remaining_content(
+    content: str,
+    promoted: List[Candidate],
+) -> str:
+    """
+    Rebuild remaining text content by removing only promoted candidate spans.
+
+    Rejected (invalid) candidate spans are left in the content so that
+    no structured text is silently dropped.
+
+    Returns the remaining text, or empty string if nothing remains.
+    """
+    if not promoted:
+        return content
+
+    # Sort by start position to process in order
+    spans = sorted([(c.start, c.end) for c in promoted])
+
+    parts: List[str] = []
+    last_end = 0
+
+    for start, end in spans:
+        segment = content[last_end:start].strip()
+        if segment:
+            parts.append(segment)
+        last_end = end
+
+    tail = content[last_end:].strip()
+    if tail:
+        parts.append(tail)
+
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def parse_tool_calls(
     content: str,
     tools: Optional[List[ToolDefinition]] = None,
 ) -> ToolParseResult:
     """
-    Parse tool calls from Amplify response content with strict anchoring.
-    
-    Strategy:
-    1. Try canonical format first (strict)
-    2. Only if tools were enabled, try compatibility parsers
-    3. Compatibility parsers require strong anchors
-    4. Validate tool name exists in allowed tools
-    5. Validate arguments are valid JSON
-    
-    Returns ToolParseResult indicating whether tool call was found.
+    Parse tool calls from Amplify response content.
+
+    Pipeline:
+    1. Detect candidates using each format's detector.
+    2. If tools are declared, validate candidates against them.
+    3. Reconstruct remaining content from non-promoted spans.
+    4. Return ToolParseResult.
+
+    Canonical format is tried first and is the only format that supports
+    embedded tool calls inside text.  Compatibility formats (legacy, JSON,
+    XML) only match whole-message content to avoid false positives.
     """
     if not content:
+        return ToolParseResult(is_tool_call=False, remaining_content="")
+
+    # Step 1: detect candidates from canonical format (supports embedded)
+    candidates = detect_canonical_candidates(content)
+
+    if not candidates:
+        # Only try compatibility parsers if tools are declared
+        if not tools:
+            return ToolParseResult(is_tool_call=False, remaining_content=content)
+
+        candidates.extend(detect_legacy_candidates(content))
+
+    if not candidates and tools:
+        candidates.extend(detect_json_candidates(content))
+
+    if not candidates and tools:
+        candidates.extend(detect_xml_candidates(content))
+
+    if not candidates:
         return ToolParseResult(is_tool_call=False, remaining_content=content)
-    
-    # Try canonical format first (PROTOCOL_V1)
-    result = try_canonical_format(content, tools)
-    if result.is_tool_call:
-        logger.info("Parsed tool call using canonical format")
-        return result
-    
-    # Only try compatibility parsers if tools were enabled
-    if tools is None:
+
+    # Step 2: validate (requires declared tools)
+    if not tools:
+        # Canonical format detected but no tools declared; fall back
         return ToolParseResult(is_tool_call=False, remaining_content=content)
-    
-    # Try legacy format with strong anchor
-    result = try_legacy_format(content, tools)
-    if result.is_tool_call:
-        logger.info("Parsed tool call using legacy format")
-        return result
-    
-    # Try JSON format with strong anchor
-    result = try_json_format(content, tools)
-    if result.is_tool_call:
-        logger.info("Parsed tool call using JSON format")
-        return result
-    
-    # Try XML format with strong anchor
-    result = try_xml_format(content, tools)
-    if result.is_tool_call:
-        logger.info("Parsed tool call using XML format")
-        return result
-    
-    # Not a tool call
-    return ToolParseResult(is_tool_call=False, remaining_content=content)
+
+    promoted, _rejected = validate_candidates(candidates, tools)
+
+    if not promoted:
+        return ToolParseResult(is_tool_call=False, remaining_content=content)
+
+    # Step 3: build ToolCall objects from promoted candidates
+    tool_calls: List[ToolCall] = []
+    for ordinal, candidate in enumerate(promoted):
+        # Use the ID from the canonical payload if present, else derive stable ID
+        call_id: Optional[str] = None
+        if candidate.parser_used in ("canonical_v1", "canonical_v1_embedded"):
+            try:
+                raw_parsed = json.loads(candidate.raw)
+                call_id = raw_parsed.get("id")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        if not call_id:
+            call_id = stable_tool_call_id(candidate.function_name, candidate.arguments, ordinal)
+
+        tool_calls.append(
+            ToolCall(
+                id=call_id,
+                type="function",
+                function_name=candidate.function_name,
+                function_arguments=json.dumps(candidate.arguments),
+            )
+        )
+
+    # Step 4: reconstruct remaining content excluding promoted spans
+    remaining = reconstruct_remaining_content(content, promoted)
+
+    # Use the parser name from the first promoted candidate
+    parser_used = promoted[0].parser_used if promoted else None
+
+    logger.info(
+        "Parsed %d tool call(s) using parser '%s'",
+        len(tool_calls),
+        parser_used,
+    )
+
+    return ToolParseResult(
+        is_tool_call=True,
+        tool_calls=tool_calls,
+        remaining_content=remaining,
+        parser_used=parser_used,
+    )
 
 
 def handle_mixed_output(
@@ -102,498 +557,33 @@ def handle_mixed_output(
 ) -> MixedOutputResult:
     """
     Handle mixed output from Amplify, splitting text commentary and tool calls.
-    
-    This implements the plan's requirements:
-    1. Treat structured tool calls as authoritative
-    2. Only promote to tool call if parsing succeeds and tool is declared
-    3. Keep commentary separate from tool calls
-    4. Fall back to plain text if ambiguous
-    
-    Returns:
-        MixedOutputResult with separated content and tool calls, or fallback to plain text
+
+    Steps:
+    1. Detect and validate tool calls via parse_tool_calls().
+    2. If tool calls found, return them with remaining text.
+    3. If no tool calls, return content as plain text.
+    4. If tools are declared but no valid calls found, fall back to plain text.
+
+    Note: transport-envelope unwrapping (JSON success/data wrapper) is
+    intentionally not performed here.  That belongs in the Amplify response
+    adapter upstream.
     """
     if not content:
-        return MixedOutputResult(
-            has_tool_calls=False,
-            content="",
-            tool_calls=[],
-        )
-    
-    # Check if the content is a partially parsed JSON response
-    # e.g. {"success": true, "message": "...", "data": "..."}
-    try:
-        parsed_content = json.loads(content)
-        if isinstance(parsed_content, dict) and "data" in parsed_content and "success" in parsed_content:
-            # Extract the data field which contains the actual content
-            data_content = parsed_content["data"]
-            if isinstance(data_content, str):
-                content = data_content
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to parse tool calls
+        return MixedOutputResult(has_tool_calls=False, content="", tool_calls=[])
+
     parse_result = parse_tool_calls(content, tools)
-    
+
     if not parse_result.is_tool_call:
-        # No tool call detected, return as plain text
         return MixedOutputResult(
             has_tool_calls=False,
             content=content,
             tool_calls=[],
         )
-    
-    # Tool call detected - validate before promoting
-    if not tools:
-        # If no tools were declared, fall back to plain text
-        logger.warning("Tool call detected but no tools were declared, falling back to text")
-        return MixedOutputResult(
-            has_tool_calls=False,
-            content=content,
-            tool_calls=[],
-            validation_passed=False,
-            fallback_reason="no_tools_declared",
-        )
-    
-    # Validate each tool call
-    valid_tool_calls = []
-    invalid_tools = []
-    
-    for tool_call in parse_result.tool_calls:
-        # Check if tool exists in declared tools
-        tool_exists = any(t.get_name() == tool_call.function_name for t in tools)
-        if not tool_exists:
-            logger.warning(
-                "Tool '%s' not in declared tools, will exclude from response",
-                tool_call.function_name,
-            )
-            invalid_tools.append(tool_call.function_name)
-            continue
-        
-        # Validate JSON arguments
-        try:
-            args = json.loads(tool_call.function_arguments)
-            if not isinstance(args, dict):
-                logger.warning(
-                    "Tool '%s' has non-dict arguments, will exclude from response",
-                    tool_call.function_name,
-                )
-                invalid_tools.append(tool_call.function_name)
-                continue
-        except json.JSONDecodeError as e:
-            logger.warning(
-                "Tool '%s' has invalid JSON arguments: %s, will exclude from response",
-                tool_call.function_name,
-                e,
-            )
-            invalid_tools.append(tool_call.function_name)
-            continue
-        
-        # Tool call is valid
-        valid_tool_calls.append(tool_call)
-    
-    # If no valid tool calls, fall back to plain text
-    if not valid_tool_calls:
-        logger.warning(
-            "All tool calls failed validation, falling back to plain text. Invalid tools: %s",
-            invalid_tools,
-        )
-        return MixedOutputResult(
-            has_tool_calls=False,
-            content=content,
-            tool_calls=[],
-            validation_passed=False,
-            fallback_reason="validation_failed",
-        )
-    
-    # Return mixed output with separated content and valid tool calls
+
+    # Tool calls were detected and validated by parse_tool_calls
     return MixedOutputResult(
         has_tool_calls=True,
         content=parse_result.remaining_content,
-        tool_calls=valid_tool_calls,
+        tool_calls=parse_result.tool_calls,
         validation_passed=True,
     )
-
-
-def extract_json_objects(content: str) -> List[Tuple[str, int, int]]:
-    """
-    Extract all potential JSON objects from a string by counting braces.
-    Returns a list of tuples: (json_string, start_index, end_index).
-    """
-    results = []
-    brace_level = 0
-    in_string = False
-    escape_next = False
-    start_idx = -1
-    
-    for i, char in enumerate(content):
-        if escape_next:
-            escape_next = False
-            continue
-            
-        if char == '\\':
-            escape_next = True
-            continue
-            
-        if char == '"':
-            in_string = not in_string
-            continue
-            
-        if not in_string:
-            if char == '{':
-                if brace_level == 0:
-                    start_idx = i
-                brace_level += 1
-            elif char == '}':
-                brace_level -= 1
-                if brace_level == 0 and start_idx != -1:
-                    json_str = content[start_idx:i+1]
-                    results.append((json_str, start_idx, i+1))
-                    start_idx = -1
-                elif brace_level < 0:
-                    # Malformed, reset
-                    brace_level = 0
-                    start_idx = -1
-                    
-    return results
-
-
-def try_canonical_format(
-    content: str,
-    tools: Optional[List[ToolDefinition]] = None,
-) -> ToolParseResult:
-    """
-    Try to parse canonical PROTOCOL_V1 format.
-    
-    Format: {"_tool_call": true, "id": "call_xxx", "tool": "name", "parameters": {...}}
-    
-    Strong anchor: Must have "_tool_call": true at the beginning.
-    Supports mixed content: extracts text before/after tool call JSON.
-    """
-    # Strong anchor: look for the _tool_call marker
-    if '"_tool_call"' not in content and "'_tool_call'" not in content:
-        return ToolParseResult(is_tool_call=False)
-    
-    try:
-        # Try to parse the entire content as JSON first
-        parsed = json.loads(content.strip())
-        
-        if not isinstance(parsed, dict):
-            return ToolParseResult(is_tool_call=False)
-        
-        if not parsed.get("_tool_call"):
-            return ToolParseResult(is_tool_call=False)
-        
-        tool_name = parsed.get("tool")
-        if not tool_name:
-            logger.warning("Canonical format missing 'tool' field")
-            return ToolParseResult(is_tool_call=False)
-        
-        # Validate tool exists if tools provided
-        if tools and not any(t.get_name() == tool_name for t in tools):
-            logger.warning("Tool '%s' not in allowed tools", tool_name)
-            return ToolParseResult(is_tool_call=False)
-        
-        tool_call = ToolCall(
-            id=parsed.get("id", f"call_{uuid.uuid4().hex[:12]}"),
-            type="function",
-            function_name=tool_name,
-            function_arguments=json.dumps(parsed.get("parameters", {})),
-        )
-        
-        return ToolParseResult(
-            is_tool_call=True,
-            tool_calls=[tool_call],
-            remaining_content=None,
-            parser_used="canonical_v1",
-        )
-    
-    except json.JSONDecodeError:
-        # Maybe embedded in text, try to extract with surrounding content
-        # Use brace counting to handle nested JSON objects
-        for json_str, start_idx, end_idx in extract_json_objects(content):
-            try:
-                parsed = json.loads(json_str)
-                if isinstance(parsed, dict) and parsed.get("_tool_call") and parsed.get("tool"):
-                    tool_name = parsed["tool"]
-                    
-                    # Validate tool exists
-                    if tools and not any(t.get_name() == tool_name for t in tools):
-                        logger.warning("Tool '%s' not in allowed tools", tool_name)
-                        continue
-                    
-                    tool_call = ToolCall(
-                        id=parsed.get("id", f"call_{uuid.uuid4().hex[:12]}"),
-                        type="function",
-                        function_name=tool_name,
-                        function_arguments=json.dumps(parsed.get("parameters", {})),
-                    )
-                    
-                    # Extract remaining content (text before and after tool call)
-                    remaining_parts = []
-                    text_before = content[:start_idx].strip()
-                    text_after = content[end_idx:].strip()
-                    
-                    if text_before:
-                        remaining_parts.append(text_before)
-                    if text_after:
-                        remaining_parts.append(text_after)
-                    
-                    remaining_text = "\n".join(remaining_parts) if remaining_parts else None
-                    
-                    return ToolParseResult(
-                        is_tool_call=True,
-                        tool_calls=[tool_call],
-                        remaining_content=remaining_text,
-                        parser_used="canonical_v1_embedded",
-                    )
-            except json.JSONDecodeError:
-                continue
-    
-    return ToolParseResult(is_tool_call=False)
-
-
-def try_legacy_format(
-    content: str,
-    tools: List[ToolDefinition],
-) -> ToolParseResult:
-    """
-    Try legacy format: [Tool Call: name]\nParameters: {...}
-    
-    Strong anchor: Must start with [Tool Call:
-    Supports mixed content: extracts text before/after tool call.
-    """
-    if not content.strip().startswith("[Tool Call:"):
-        return ToolParseResult(is_tool_call=False)
-    
-    try:
-        match = re.match(
-            r"\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(.+?)(?:\n\n|$)",
-            content,
-            re.DOTALL,
-        )
-        if not match:
-            return ToolParseResult(is_tool_call=False)
-        
-        name = match.group(1).strip()
-        params_str = match.group(2).strip()
-        
-        # Validate tool exists
-        if not any(t.get_name() == name for t in tools):
-            logger.warning("Tool '%s' not in allowed tools", name)
-            return ToolParseResult(is_tool_call=False)
-        
-        try:
-            params = json.loads(params_str)
-        except json.JSONDecodeError:
-            logger.warning("Invalid JSON in legacy format parameters")
-            return ToolParseResult(is_tool_call=False)
-        
-        tool_call = ToolCall(
-            id=f"call_{uuid.uuid4().hex[:12]}",
-            type="function",
-            function_name=name,
-            function_arguments=json.dumps(params),
-        )
-        
-        # Extract remaining content (text after tool call)
-        remaining_text = None
-        if match.end() < len(content):
-            text_after = content[match.end():].strip()
-            if text_after:
-                remaining_text = text_after
-        
-        return ToolParseResult(
-            is_tool_call=True,
-            tool_calls=[tool_call],
-            remaining_content=remaining_text,
-            parser_used="legacy",
-        )
-    
-    except Exception as e:
-        logger.debug("Legacy format parsing failed: %s", e)
-        return ToolParseResult(is_tool_call=False)
-
-
-def try_json_format(
-    content: str,
-    tools: List[ToolDefinition],
-) -> ToolParseResult:
-    """
-    Try JSON format with strong anchors: {"tool": ...} or {"command": ...}
-    
-    Strong anchor: Must have "tool" or "command" field.
-    Supports mixed content: extracts JSON and returns remaining text.
-    """
-    # Strong anchor: check for tool/command field anywhere in content
-    if '"tool"' not in content and '"command"' not in content:
-        return ToolParseResult(is_tool_call=False)
-    
-    try:
-        # Try parsing entire content first
-        parsed = json.loads(content.strip())
-        
-        if not isinstance(parsed, dict):
-            return ToolParseResult(is_tool_call=False)
-        
-        name = parsed.get("tool") or parsed.get("command")
-        if not name:
-            return ToolParseResult(is_tool_call=False)
-        
-        # Validate tool exists
-        if not any(t.get_name() == name for t in tools):
-            logger.warning("Tool '%s' not in allowed tools", name)
-            return ToolParseResult(is_tool_call=False)
-        
-        tool_call = ToolCall(
-            id=f"call_{uuid.uuid4().hex[:12]}",
-            type="function",
-            function_name=name,
-            function_arguments=json.dumps(parsed.get("parameters", {})),
-        )
-        
-        return ToolParseResult(
-            is_tool_call=True,
-            tool_calls=[tool_call],
-            remaining_content=None,
-            parser_used="json",
-        )
-    
-    except json.JSONDecodeError:
-        # Try to extract JSON block from mixed content
-        # Use brace counting to handle nested JSON objects
-        tool_calls_found = []
-        remaining_parts = []
-        last_end = 0
-        
-        # Find all potential JSON objects with tool/command fields
-        for json_str, start_idx, end_idx in extract_json_objects(content):
-            try:
-                parsed = json.loads(json_str)
-                if isinstance(parsed, dict):
-                    name = parsed.get("tool") or parsed.get("command")
-                    if name and any(t.get_name() == name for t in tools):
-                        # Valid tool call found
-                        # Capture any text before this JSON block
-                        if start_idx > last_end:
-                            text_before = content[last_end:start_idx].strip()
-                            if text_before:
-                                remaining_parts.append(text_before)
-                        
-                        tool_call = ToolCall(
-                            id=f"call_{uuid.uuid4().hex[:12]}",
-                            type="function",
-                            function_name=name,
-                            function_arguments=json.dumps(parsed.get("parameters", {})),
-                        )
-                        tool_calls_found.append(tool_call)
-                        last_end = end_idx
-            except json.JSONDecodeError:
-                continue
-        
-        # Capture any text after the last JSON block
-        if last_end < len(content):
-            text_after = content[last_end:].strip()
-            if text_after:
-                remaining_parts.append(text_after)
-        
-        if tool_calls_found:
-            # Combine remaining text parts
-            remaining_text = "\n".join(remaining_parts) if remaining_parts else None
-            
-            return ToolParseResult(
-                is_tool_call=True,
-                tool_calls=tool_calls_found,
-                remaining_content=remaining_text,
-                parser_used="json_embedded",
-            )
-    
-    return ToolParseResult(is_tool_call=False)
-
-
-def try_xml_format(
-    content: str,
-    tools: List[ToolDefinition],
-) -> ToolParseResult:
-    """
-    Try XML format: <tool_call> or <tool_use>
-    
-    Strong anchor: Must have <tool_call> or <tool_use> tag.
-    Supports mixed content: extracts text before/after tool call XML.
-    """
-    if "<tool_call>" not in content and "<tool_use>" not in content:
-        return ToolParseResult(is_tool_call=False)
-    
-    try:
-        # Extract XML block
-        xml_match = re.search(
-            r"<tool_(?:call|use)>([\s\S]*?)</tool_(?:call|use)>",
-            content,
-            re.DOTALL,
-        )
-        if not xml_match:
-            return ToolParseResult(is_tool_call=False)
-        
-        xml_content = f"<root>{xml_match.group(0)}</root>"
-        root = ET.fromstring(xml_content)
-        
-        tool_elem = root.find(".//tool_call")
-        if tool_elem is None:
-            tool_elem = root.find(".//tool_use")
-        
-        if tool_elem is None:
-            return ToolParseResult(is_tool_call=False)
-        
-        tool_name_elem = tool_elem.find("tool_name")
-        if tool_name_elem is None or not tool_name_elem.text:
-            return ToolParseResult(is_tool_call=False)
-        
-        name = tool_name_elem.text.strip()
-        
-        # Validate tool exists
-        if not any(t.get_name() == name for t in tools):
-            logger.warning("Tool '%s' not in allowed tools", name)
-            return ToolParseResult(is_tool_call=False)
-        
-        # Parse parameters
-        params = {}
-        params_elem = tool_elem.find("parameters")
-        if params_elem is not None:
-            for child in params_elem:
-                value = child.text or ""
-                # Convert string booleans
-                if value.lower() == "false":
-                    params[child.tag] = False
-                elif value.lower() == "true":
-                    params[child.tag] = True
-                else:
-                    params[child.tag] = value
-        
-        tool_call = ToolCall(
-            id=f"call_{uuid.uuid4().hex[:12]}",
-            type="function",
-            function_name=name,
-            function_arguments=json.dumps(params),
-        )
-        
-        # Extract remaining content (text before and after tool call)
-        remaining_parts = []
-        text_before = content[:xml_match.start()].strip()
-        text_after = content[xml_match.end():].strip()
-        
-        if text_before:
-            remaining_parts.append(text_before)
-        if text_after:
-            remaining_parts.append(text_after)
-        
-        remaining_text = "\n".join(remaining_parts) if remaining_parts else None
-        
-        return ToolParseResult(
-            is_tool_call=True,
-            tool_calls=[tool_call],
-            remaining_content=remaining_text,
-            parser_used="xml",
-        )
-    
-    except Exception as e:
-        logger.debug("XML format parsing failed: %s", e)
-        return ToolParseResult(is_tool_call=False)

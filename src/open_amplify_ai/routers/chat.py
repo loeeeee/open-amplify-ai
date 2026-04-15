@@ -174,10 +174,11 @@ async def create_chat_completion(
             ]
             
             # Mixed output: include both commentary text and tool_calls
-            # Per OpenAI spec, content can be present even with tool calls
+            # Per OpenAI spec, content can be present even with tool calls,
+            # or null when there is no commentary alongside the tool calls.
             message_obj = {
                 "role": "assistant",
-                "content": mixed_result.content,  # May be None or commentary text
+                "content": mixed_result.content if mixed_result.content else None,
                 "tool_calls": tool_calls_json,
             }
             finish_reason = "tool_calls"

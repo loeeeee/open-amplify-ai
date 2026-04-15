@@ -23,23 +23,30 @@ def _make_async_client(mocker, response):
 
 
 def test_two_tool_calls_in_one_response(mocker):
-    """Test that two tool calls in one assistant message are properly parsed."""
-    # Simulate LLM returning two tool calls
+    """Test two canonical tool calls in one assistant message are properly parsed.
+
+    The JSON compatibility format is whole-message only, so two JSON objects on
+    separate lines are not promoted.  Use the canonical _tool_call format, which
+    supports multiple embedded objects, to test multi-tool-call responses.
+    """
+    # Use canonical format so both calls are promoted
     tool_response = (
-        '{"tool":"list_files","parameters":{"path":"/home","recursive":true}}\n'
-        '{"tool":"read_file","parameters":{"path":"/tmp/test.txt"}}'
+        '{"_tool_call": true, "id": "call_001", "tool": "list_files", '
+        '"parameters": {"path": "/home", "recursive": true}}\n'
+        '{"_tool_call": true, "id": "call_002", "tool": "read_file", '
+        '"parameters": {"path": "/tmp/test.txt"}}'
     )
-    
+
     mock_response = mocker.Mock()
     mock_response.status_code = 200
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "data": tool_response}
-    
+
     mocker.patch(
         "open_amplify_ai.routers.chat.httpx.AsyncClient",
         return_value=_make_async_client(mocker, mock_response),
     )
-    
+
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -76,18 +83,17 @@ def test_two_tool_calls_in_one_response(mocker):
             ],
         },
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     choice = data["choices"][0]
-    
+
     assert choice["finish_reason"] == "tool_calls"
     assert "tool_calls" in choice["message"]
-    
+
     tool_calls = choice["message"]["tool_calls"]
-    # Should have two tool calls
     assert len(tool_calls) >= 1, "Expected at least one tool call to be parsed"
-    
+
     # Check first tool call
     tc1 = tool_calls[0]
     assert tc1["type"] == "function"
@@ -95,22 +101,27 @@ def test_two_tool_calls_in_one_response(mocker):
 
 
 def test_mixed_text_and_tool_calls(mocker):
-    """Test assistant message with both natural language and tool calls."""
+    """Test assistant message with both natural language and a canonical tool call.
+
+    JSON-format embedded in prose is no longer promoted (false-positive prevention).
+    Use canonical _tool_call format, which supports embedded calls with mixed text.
+    """
     tool_response = (
         'I will help you with that.\n'
-        '{"tool":"list_files","parameters":{"path":"/home","recursive":true}}'
+        '{"_tool_call": true, "id": "call_001", "tool": "list_files", '
+        '"parameters": {"path": "/home", "recursive": true}}'
     )
-    
+
     mock_response = mocker.Mock()
     mock_response.status_code = 200
     mock_response.raise_for_status = mocker.Mock()
     mock_response.json.return_value = {"success": True, "data": tool_response}
-    
+
     mocker.patch(
         "open_amplify_ai.routers.chat.httpx.AsyncClient",
         return_value=_make_async_client(mocker, mock_response),
     )
-    
+
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -133,12 +144,12 @@ def test_mixed_text_and_tool_calls(mocker):
             }],
         },
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     choice = data["choices"][0]
-    
-    # Should detect tool call even with preceding text
+
+    # Should detect the canonical tool call even with preceding text
     assert "tool_calls" in choice["message"]
 
 
@@ -209,10 +220,16 @@ def test_tool_call_with_nested_objects_and_arrays(mocker):
 
 
 def test_duplicate_tool_names_with_different_args(mocker):
-    """Test multiple calls to the same tool with different arguments."""
+    """Test multiple calls to the same tool with different arguments.
+
+    Use canonical format so both calls are promoted; JSON format is
+    whole-message only and does not support multiple objects.
+    """
     tool_response = (
-        '{"tool":"read_file","parameters":{"path":"/tmp/file1.txt"}}\n'
-        '{"tool":"read_file","parameters":{"path":"/tmp/file2.txt"}}'
+        '{"_tool_call": true, "id": "call_001", "tool": "read_file", '
+        '"parameters": {"path": "/tmp/file1.txt"}}\n'
+        '{"_tool_call": true, "id": "call_002", "tool": "read_file", '
+        '"parameters": {"path": "/tmp/file2.txt"}}'
     )
     
     mock_response = mocker.Mock()

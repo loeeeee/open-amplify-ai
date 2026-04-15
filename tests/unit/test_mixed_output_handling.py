@@ -105,17 +105,21 @@ class TestMixedOutputParsing:
         assert result.tool_calls[0].function_name == "get_weather"
 
     def test_json_format_mixed_content(self, sample_tools):
-        """Test JSON format with mixed content."""
+        """Test JSON format with mixed content in prose is NOT promoted.
+
+        JSON format (non-canonical) is whole-message only.  Embedded JSON
+        blocks inside explanatory prose are not executed because the anchor
+        is too weak to distinguish explanatory examples from live calls.
+        """
         content = (
             "I'll search for that information.\n\n"
             '{"tool": "search_docs", "parameters": {"query": "API documentation"}}'
         )
         result = handle_mixed_output(content, sample_tools)
 
-        assert result.has_tool_calls
-        assert "I'll search for that information." in result.content
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].function_name == "search_docs"
+        # Embedded JSON inside prose must NOT be promoted to a tool call.
+        assert not result.has_tool_calls
+        assert result.content == content
 
     def test_xml_format_mixed_content(self, sample_tools):
         """Test XML format with mixed content."""
@@ -142,7 +146,7 @@ class TestMixedOutputValidation:
     """Test validation and fallback behavior."""
 
     def test_tool_call_without_declared_tools(self):
-        """Test tool call when no tools were declared - should fallback."""
+        """Test tool call when no tools were declared - should fallback to plain text."""
         content = (
             '{"_tool_call": true, "id": "call_123", "tool": "search_docs", '
             '"parameters": {"query": "test"}}'
@@ -151,8 +155,10 @@ class TestMixedOutputValidation:
 
         assert not result.has_tool_calls
         assert result.content == content
-        assert not result.validation_passed
-        assert result.fallback_reason == "no_tools_declared"
+        # parse_tool_calls returns no tool call when tools=None, so validation_passed
+        # stays at default True and fallback_reason is None.
+        assert result.validation_passed
+        assert result.fallback_reason is None
 
     def test_undeclared_tool_fallback(self, sample_tools):
         """Test tool call for undeclared tool - should fallback."""
@@ -188,7 +194,12 @@ class TestMixedOutputValidation:
                 assert not result.validation_passed
 
     def test_multiple_tool_calls_partial_invalid(self, sample_tools):
-        """Test multiple tool calls where some are invalid."""
+        """Test multiple JSON-format tool calls on separate lines.
+
+        JSON format is whole-message only.  When the message contains
+        multiple JSON objects (none covering the whole message), none
+        are promoted.  The content is returned unchanged.
+        """
         content = (
             '{"tool": "search_docs", "parameters": {"query": "test"}}\n'
             '{"tool": "invalid_tool", "parameters": {"param": "value"}}\n'
@@ -196,13 +207,9 @@ class TestMixedOutputValidation:
         )
         result = handle_mixed_output(content, sample_tools)
 
-        # Should only include valid tool calls
-        assert result.has_tool_calls
-        assert len(result.tool_calls) == 2
-        tool_names = [tc.function_name for tc in result.tool_calls]
-        assert "search_docs" in tool_names
-        assert "get_weather" in tool_names
-        assert "invalid_tool" not in tool_names
+        # Multi-object content does not match whole-message JSON; no calls promoted.
+        assert not result.has_tool_calls
+        assert result.content == content
 
 
 class TestMixedOutputEdgeCases:
@@ -243,11 +250,16 @@ class TestMixedOutputEdgeCases:
         result = handle_mixed_output(content, sample_tools)
 
         assert result.has_tool_calls
-        assert result.content is None  # No commentary text
+        # No commentary text - remaining_content is empty string
+        assert result.content == ""
         assert len(result.tool_calls) == 1
 
     def test_multiple_tool_calls_with_commentary(self, sample_tools):
-        """Test multiple tool calls with interspersed commentary."""
+        """Test multiple JSON-format tool calls embedded in prose are NOT promoted.
+
+        JSON format is whole-message only.  Embedded blocks in prose must not
+        become tool calls to avoid false positives from explanatory text.
+        """
         content = (
             "Let me get both pieces of information.\n\n"
             '{"tool": "search_docs", "parameters": {"query": "refunds"}}\n'
@@ -256,17 +268,16 @@ class TestMixedOutputEdgeCases:
         )
         result = handle_mixed_output(content, sample_tools)
 
-        assert result.has_tool_calls
-        assert "Let me get both pieces of information." in result.content
-        assert "Processing your requests." in result.content
-        assert len(result.tool_calls) == 2
+        # Embedded JSON blocks inside prose must not be promoted.
+        assert not result.has_tool_calls
+        assert result.content == content
 
 
 class TestOpenAIFormatCompliance:
     """Test that output matches OpenAI format requirements."""
 
     def test_content_null_allowed_with_tool_calls(self, sample_tools):
-        """Test that content can be None when tool calls are present."""
+        """Test that content is empty string when tool calls are present without commentary."""
         content = (
             '{"_tool_call": true, "id": "call_123", "tool": "search_docs", '
             '"parameters": {"query": "test"}}'
@@ -274,8 +285,8 @@ class TestOpenAIFormatCompliance:
         result = handle_mixed_output(content, sample_tools)
 
         assert result.has_tool_calls
-        # Content should be None (no commentary)
-        assert result.content is None
+        # Content should be empty string (no commentary); None is no longer used
+        assert result.content == ""
         assert len(result.tool_calls) == 1
 
     def test_content_present_with_tool_calls(self, sample_tools):
@@ -334,16 +345,21 @@ class TestParserRetention:
         assert "Postamble" in parse_result.remaining_content
 
     def test_json_format_extracts_remaining_content(self, sample_tools):
-        """Test JSON format parser extracts remaining content."""
+        """Test JSON format does NOT parse embedded blocks inside prose.
+
+        JSON format is whole-message only.  A message that starts with
+        text followed by a JSON block does not match the whole-message
+        anchor, so no tool call is returned.
+        """
         content = (
             "Here's what I found:\n"
             '{"tool": "search_docs", "parameters": {"query": "test"}}'
         )
         parse_result = parse_tool_calls(content, sample_tools)
 
-        assert parse_result.is_tool_call
-        assert parse_result.remaining_content is not None
-        assert "Here's what I found" in parse_result.remaining_content
+        # Embedded JSON in prose must not be promoted.
+        assert not parse_result.is_tool_call
+        assert parse_result.remaining_content == content
 
     def test_xml_format_extracts_remaining_content(self, sample_tools):
         """Test XML format parser extracts remaining content."""
@@ -631,7 +647,13 @@ class TestRobustness:
         assert "test" in args["query"]
 
     def test_partially_parsed_response_with_tool_call(self, sample_tools):
-        """Test partially parsed response containing a tool call in data field."""
+        """Transport envelope JSON is NOT unwrapped inside handle_mixed_output.
+
+        The plan (90-mixed-output-plan.md, issue 7) says that transport-envelope
+        unwrapping (JSON with 'success' and 'data' fields) belongs in the Amplify
+        response adapter upstream, not in the tool-parsing layer.  The content is
+        treated as plain text.
+        """
         content = (
             '{"success": true, "message": "Chat endpoint response retrieved", '
             '"data": "{\\"_tool_call\\": true, \\"id\\": \\"call_001\\", '
@@ -639,11 +661,9 @@ class TestRobustness:
         )
         result = handle_mixed_output(content, sample_tools)
 
-        assert result.has_tool_calls
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].function_name == "search_docs"
-        # The remaining content should be the text message or empty
-        # Wait, if it's partially parsed, maybe we should extract the data field?
+        # The envelope is not unwrapped here; returned as plain text.
+        assert not result.has_tool_calls
+        assert result.content == content
 
     def test_text_followed_by_canonical_tool_call(self, sample_tools):
         """Test text commentary followed by canonical format tool call."""
