@@ -13,7 +13,7 @@
 
 python3Packages.buildPythonPackage rec {
   pname = "open-amplify-ai";
-  version = "0.0.1";
+  version = "1.0.0";
   pyproject = true;
 
   # Build from the project root (two levels up from this file).

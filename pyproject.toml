@@ -1,6 +1,6 @@
 [project]
 name = "open-amplify-ai"
-version = "0.0.1"
+version = "1.0.0"
 description = "OpenAI-compatible wrapper for Amplify AI API"
 readme = "README.md"
 authors = [

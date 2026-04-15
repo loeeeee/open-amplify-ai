@@ -258,6 +258,13 @@ completion_tokens, total_tokens, error, model`
 
 ## Development Guide
 
+### Versioning and releases
+
+This project follows semantic versioning.
+
+- Current version: `1.0.0`
+- Release tags are formatted as `v<version>` (example: `v1.0.0`)
+
 ### Running Tests
 
 **Unit tests (no Amplify token required):**
