@@ -12,7 +12,7 @@ against Amplify AI without modifying those tools.
 This project targets developers at Vanderbilt University who:
 
 - Have access to an Amplify AI token (`amp-v1-...`) and a Vanderbilt email
-  address.
+  address. [Get an API token](#get-api-tokens)
 - Want to run AI coding tools (Cline, Kilo, OpenClaw, or any OpenAI-compatible
   client) against Amplify AI.
 - Are running NixOS or any system with Python 3.13+ available.
@@ -387,3 +387,14 @@ curl http://localhost:8080/v1/models
 | Log / state dir | `/var/lib/amplify-ai/` (default `dataDir`) |
 | User | Ephemeral (`DynamicUser = true`) |
 | Restart policy | `on-failure`, 5 s back-off |
+
+# Get API Tokens
+
+- Login to [Vanderbilt.AI](https://www.vanderbilt.ai)
+- Open hamburger manual by clicking profile picture at top right corner
+- Go to settings
+- Create an account at Account tab, the strings can be random
+- Go to API Access tab
+- Create an API key
+
+Note: No worries, you won't be billed
