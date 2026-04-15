@@ -1,18 +1,112 @@
-from open_amplify_ai.utils import handle_upstream_error
 """Models endpoints mapped to the Amplify API."""
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
-from open_amplify_ai.types import ModelInfo
+from open_amplify_ai.types import (
+    ModelCapabilities,
+    ModelCost,
+    ModelInfo,
+    ModelLimit,
+)
+from open_amplify_ai.utils import handle_upstream_error
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/models", tags=["Models"])
+
+
+def _build_model_info(m: Dict[str, Any]) -> ModelInfo:
+    """Map a single Amplify model dict to a ModelInfo with Kilo-consumable fields.
+
+    Pricing values from Amplify are passed through as-is. The convention used
+    throughout this translator is dollars per million tokens, applied here in
+    exactly one place.
+    """
+    input_ctx = m.get("inputContextWindow")
+    output_limit = m.get("outputTokenLimit")
+
+    cost = ModelCost(
+        input=m.get("inputTokenCost"),
+        output=m.get("outputTokenCost"),
+        cache_read=m.get("cachedInputTokenCost"),
+        cache_write=m.get("cachedOutputTokenCost"),
+    )
+
+    limit = ModelLimit(
+        context=input_ctx,
+        output=output_limit,
+    )
+
+    capabilities = ModelCapabilities(
+        images=m.get("supportsImages"),
+        system_prompt=m.get("supportsSystemPrompts"),
+        description=m.get("description"),
+    )
+
+    max_model_len = (
+        input_ctx + output_limit
+        if input_ctx is not None and output_limit is not None
+        else None
+    )
+
+    return ModelInfo(
+        id=m.get("id", ""),
+        cost=cost,
+        limit=limit,
+        capabilities=capabilities,
+        display_name=m.get("name"),
+        max_output_tokens=output_limit,
+        context_length=input_ctx,
+        max_model_len=max_model_len,
+    )
+
+
+def _model_to_dict(info: ModelInfo) -> Dict[str, Any]:
+    """Serialize a ModelInfo to a response dict with Kilo-compatible fields."""
+    result: Dict[str, Any] = {
+        "id": info.id,
+        "object": info.object,
+        "created": info.created,
+        "owned_by": info.owned_by,
+    }
+    if info.cost is not None:
+        cost_dict = info.cost.to_dict()
+        if cost_dict:
+            result["cost"] = cost_dict
+    if info.limit is not None:
+        limit_dict = info.limit.to_dict()
+        if limit_dict:
+            result["limit"] = limit_dict
+    if info.capabilities is not None:
+        cap_dict = info.capabilities.to_dict()
+        if cap_dict:
+            result["capabilities"] = cap_dict
+    if info.display_name is not None:
+        result["display_name"] = info.display_name
+    # Legacy flat fields for backward compatibility
+    result["max_output_tokens"] = info.max_output_tokens
+    result["context_length"] = info.context_length
+    result["max_model_len"] = info.max_model_len
+    return result
+
+
+def _filter_alias_models(amplify_models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove alias entries that are not real callable models.
+
+    Amplify returns entries like 'default', 'advanced', 'cheapest', and
+    'documentCaching' as metadata or recommendations. These should not
+    appear as separate selectable model IDs.
+    """
+    alias_keys = {"default", "advanced", "cheapest", "documentCaching"}
+    return [
+        m for m in amplify_models
+        if m.get("id") not in alias_keys
+    ]
 
 
 @router.get("")
@@ -33,34 +127,12 @@ async def list_models(headers: dict = Depends(get_amplify_headers)) -> Dict[str,
             )
 
         amplify_models = data.get("data", {}).get("models", [])
-        models = [
-            ModelInfo(
-                id=m.get("id"),
-                max_output_tokens=m.get("outputTokenLimit"),
-                context_length=m.get("inputContextWindow"),
-                max_model_len=(
-                    m.get("inputContextWindow", 0) + m.get("outputTokenLimit", 0)
-                    if m.get("inputContextWindow") and m.get("outputTokenLimit")
-                    else None
-                ),
-            )
-            for m in amplify_models
-        ]
+        amplify_models = _filter_alias_models(amplify_models)
+        models = [_build_model_info(m) for m in amplify_models]
 
         return {
             "object": "list",
-            "data": [
-                {
-                    "id": m.id,
-                    "object": m.object,
-                    "created": m.created,
-                    "owned_by": m.owned_by,
-                    "max_output_tokens": m.max_output_tokens,
-                    "context_length": m.context_length,
-                    "max_model_len": m.max_model_len,
-                }
-                for m in models
-            ],
+            "data": [_model_to_dict(m) for m in models],
         }
     except httpx.HTTPError as e:
         raise handle_upstream_error(logger, e, "fetching")
@@ -94,25 +166,8 @@ async def retrieve_model(
         if not match:
             raise HTTPException(status_code=404, detail=f"Model '{model}' not found")
 
-        info = ModelInfo(
-            id=match.get("id"),
-            max_output_tokens=match.get("outputTokenLimit"),
-            context_length=match.get("inputContextWindow"),
-            max_model_len=(
-                match.get("inputContextWindow", 0) + match.get("outputTokenLimit", 0)
-                if match.get("inputContextWindow") and match.get("outputTokenLimit")
-                else None
-            ),
-        )
-        return {
-            "id": info.id,
-            "object": info.object,
-            "created": info.created,
-            "owned_by": info.owned_by,
-            "max_output_tokens": info.max_output_tokens,
-            "context_length": info.context_length,
-            "max_model_len": info.max_model_len,
-        }
+        info = _build_model_info(match)
+        return _model_to_dict(info)
     except HTTPException:
         raise
     except httpx.HTTPError as e:

@@ -58,9 +58,18 @@ The FastAPI server exposes a subset of the OpenAI API under `/v1/*`, backed by A
 
 ### Models
 
-- `GET /v1/models` — list available models
+- `GET /v1/models` — list available models with Kilo-compatible metadata
 - `GET /v1/models/{model}` — retrieve a model by ID
 - `DELETE /v1/models/{model}` — always returns `405` (Amplify does not support model deletion)
+
+Model responses include structured metadata for downstream consumers (e.g. Kilo):
+- `cost` — pricing in dollars per million tokens (`input`, `output`, optionally `cache_read`, `cache_write`)
+- `limit` — token limits (`context`, `output`)
+- `capabilities` — feature flags (`images`, `system_prompt`, `description`)
+- `display_name` — human-readable model name from Amplify
+- Legacy flat fields (`context_length`, `max_output_tokens`, `max_model_len`) are preserved for backward compatibility
+
+Alias entries (`default`, `advanced`, `cheapest`, `documentCaching`) are filtered from the model list.
 
 ### Chat Completions
 

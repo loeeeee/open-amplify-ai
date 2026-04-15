@@ -159,19 +159,88 @@ class ErrorResponse:
 
 
 # ---------------------------------------------------------------------------
+# Kilo-compatible model metadata
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ModelCost:
+    """Per-model pricing in dollars per million tokens."""
+    input: Optional[float] = None
+    output: Optional[float] = None
+    cache_read: Optional[float] = None
+    cache_write: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dict, omitting None values."""
+        result: Dict[str, Any] = {}
+        if self.input is not None:
+            result["input"] = self.input
+        if self.output is not None:
+            result["output"] = self.output
+        if self.cache_read is not None:
+            result["cache_read"] = self.cache_read
+        if self.cache_write is not None:
+            result["cache_write"] = self.cache_write
+        return result
+
+
+@dataclass
+class ModelLimit:
+    """Per-model token limits."""
+    context: Optional[int] = None
+    output: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dict, omitting None values."""
+        result: Dict[str, Any] = {}
+        if self.context is not None:
+            result["context"] = self.context
+        if self.output is not None:
+            result["output"] = self.output
+        return result
+
+
+@dataclass
+class ModelCapabilities:
+    """Feature flags describing what a model supports."""
+    images: Optional[bool] = None
+    system_prompt: Optional[bool] = None
+    description: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dict, omitting None values."""
+        result: Dict[str, Any] = {}
+        if self.images is not None:
+            result["images"] = self.images
+        if self.system_prompt is not None:
+            result["system_prompt"] = self.system_prompt
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
+
+# ---------------------------------------------------------------------------
 # OpenAI Data structures (Legacy - kept for compatibility)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ModelInfo:
-    """OpenAI-compatible model object with Amplify extensions."""
+    """OpenAI-compatible model object with Kilo-consumable extensions."""
 
     id: str
     object: str = "model"
     created: int = field(default_factory=lambda: int(time.time()))
     owned_by: str = "amplify-ai"
-    
-    # Extended fields from Amplify API
+
+    # Kilo-consumable structured metadata
+    cost: Optional[ModelCost] = None
+    limit: Optional[ModelLimit] = None
+    capabilities: Optional[ModelCapabilities] = None
+
+    # Display name from Amplify
+    display_name: Optional[str] = None
+
+    # Legacy flat fields (kept for backward compatibility)
     max_output_tokens: Optional[int] = None  # Amplify's outputTokenLimit
     context_length: Optional[int] = None     # Amplify's inputContextWindow
     max_model_len: Optional[int] = None      # Total tokens (context + output)
