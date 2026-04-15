@@ -85,9 +85,12 @@ Alias entries (`default`, `advanced`, `cheapest`, `documentCaching`) are filtere
     - Strict request validation and explicit error handling
     - Deterministic tool calling with strong anchoring
     - Robust mixed output handling (text + tool calls), including deeply nested JSON and partially parsed responses
+    - Multiple canonical embedded tool calls per message are all extracted
+    - Legacy format `[Tool Call: name]` now supports text before the block
+    - XML fallback format is documented as explicitly lossy
     - Streaming state machine for clean mode transitions
     - Precise HTTP status code mapping
-    - See [`docs-vibe/72-chat-endpoint-refactor-complete.md`](docs-vibe/72-chat-endpoint-refactor-complete.md) and [`docs-vibe/01-mixed-response-refactoring.md`](docs-vibe/01-mixed-response-refactoring.md) for details
+    - See [`docs-vibe/72-chat-endpoint-refactor-complete.md`](docs-vibe/72-chat-endpoint-refactor-complete.md), [`docs-vibe/91-tool-parsing-refactor.md`](docs-vibe/91-tool-parsing-refactor.md), and [`docs-vibe/92-tool-parsing-part2.md`](docs-vibe/92-tool-parsing-part2.md) for details
   - Local usage accounting: every response includes a `usage` object with estimated `prompt_tokens`, `completion_tokens`, and `total_tokens`. Counts are computed from the post-transformation Amplify request (chars/4 heuristic). For streaming, the final chunk includes usage when `stream_options.include_usage` is true. See [`docs-vibe/89-local-usage-accounting.md`](docs-vibe/89-local-usage-accounting.md) for details.
 
 ### Files

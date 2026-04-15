@@ -390,9 +390,35 @@ class TestParserRetention:
         parse_result = parse_tool_calls(content, sample_tools)
 
         assert parse_result.is_tool_call
-        # Legacy format should extract text after
-        if parse_result.remaining_content:
-            assert "Processing" in parse_result.remaining_content
+        assert "Processing" in parse_result.remaining_content
+
+    def test_legacy_format_with_text_before(self, sample_tools):
+        """Test legacy format with text before the [Tool Call: block."""
+        content = (
+            "Let me search for that.\n\n"
+            "[Tool Call: search_docs]\n"
+            "Parameters: {\"query\": \"refund policy\"}\n\n"
+        )
+        parse_result = parse_tool_calls(content, sample_tools)
+
+        assert parse_result.is_tool_call
+        assert parse_result.tool_calls[0].function_name == "search_docs"
+        assert "Let me search for that." in parse_result.remaining_content
+
+    def test_legacy_format_with_text_before_and_after(self, sample_tools):
+        """Test legacy format with text both before and after the block."""
+        content = (
+            "I will search the docs now.\n\n"
+            "[Tool Call: search_docs]\n"
+            "Parameters: {\"query\": \"API guide\"}\n\n"
+            "Done."
+        )
+        result = handle_mixed_output(content, sample_tools)
+
+        assert result.has_tool_calls
+        assert result.tool_calls[0].function_name == "search_docs"
+        assert "I will search the docs now." in result.content
+        assert "Done." in result.content
 
 
 class TestStreamingScenarios:
@@ -493,7 +519,7 @@ class TestStreamingScenarios:
         assert "The format is" in result.content
 
     def test_multiple_canonical_formats_in_sequence(self, sample_tools):
-        """Test multiple canonical tool calls in sequence."""
+        """Test multiple canonical tool calls in sequence are both parsed."""
         content = (
             '{"_tool_call": true, "id": "call_001", "tool": "search_docs", '
             '"parameters": {"query": "first"}}\n'
@@ -502,14 +528,31 @@ class TestStreamingScenarios:
         )
         result = handle_mixed_output(content, sample_tools)
 
-        # Should parse both tool calls
-        # Note: Current implementation may only parse first canonical format
-        # This test documents expected behavior
-        if result.has_tool_calls:
-            # At least one should be parsed
-            assert len(result.tool_calls) >= 1
-            tool_names = [tc.function_name for tc in result.tool_calls]
-            assert "search_docs" in tool_names or "get_weather" in tool_names
+        assert result.has_tool_calls
+        assert len(result.tool_calls) == 2
+        tool_names = [tc.function_name for tc in result.tool_calls]
+        assert "search_docs" in tool_names
+        assert "get_weather" in tool_names
+
+    def test_multiple_canonical_calls_with_commentary(self, sample_tools):
+        """Test multiple canonical calls with surrounding commentary."""
+        content = (
+            "Let me do two things at once.\n\n"
+            '{"_tool_call": true, "id": "call_001", "tool": "search_docs", '
+            '"parameters": {"query": "refund"}}\n'
+            '{"_tool_call": true, "id": "call_002", "tool": "get_weather", '
+            '"parameters": {"location": "Boston"}}\n\n'
+            "Processing now."
+        )
+        result = handle_mixed_output(content, sample_tools)
+
+        assert result.has_tool_calls
+        assert len(result.tool_calls) == 2
+        tool_names = [tc.function_name for tc in result.tool_calls]
+        assert "search_docs" in tool_names
+        assert "get_weather" in tool_names
+        assert "Let me do two things at once." in result.content
+        assert "Processing now." in result.content
 
 
 class TestAmbiguousFormats:

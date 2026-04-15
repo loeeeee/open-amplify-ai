@@ -196,16 +196,22 @@ def detect_legacy_candidates(content: str) -> List[Candidate]:
 
     Format: [Tool Call: name]\nParameters: {...}
 
-    Whole-message only: the trimmed content must start with "[Tool Call:".
-    This prevents promoting embedded legacy blocks inside explanatory prose.
+    Text before and after the block is supported.  The "[Tool Call:" marker
+    is treated as a strong enough anchor to distinguish live calls from
+    explanatory prose, so the trimmed-start constraint from the original
+    implementation is removed.
+
+    Known limitation: the regex terminates the parameters capture on a blank
+    line (double newline), so pretty-printed JSON with blank lines inside
+    will be parsed incorrectly.
 
     Returns a list of Candidate objects (may be empty).
     """
-    if not content.strip().startswith("[Tool Call:"):
+    if "[Tool Call:" not in content:
         return []
 
     try:
-        match = re.match(
+        match = re.search(
             r"\[Tool Call:\s*([^\]]+)\]\s*\n?Parameters:\s*(\{[\s\S]*?\})(?:\n\n|$)",
             content,
             re.DOTALL,
@@ -228,7 +234,7 @@ def detect_legacy_candidates(content: str) -> List[Candidate]:
 
         return [
             Candidate(
-                start=0,
+                start=match.start(),
                 end=match.end(),
                 parser_used="legacy",
                 function_name=name,
@@ -309,9 +315,17 @@ def detect_xml_candidates(content: str) -> List[Candidate]:
     Format: <tool_call><tool_name>name</tool_name><parameters>...</parameters></tool_call>
             or <tool_use>...</tool_use>
 
-    Note: XML parsing is lossy for complex types (numbers, null, nested
-    structures).  Only string booleans are coerced.  This format is
-    provided as a compatibility fallback only.
+    LOSSY FORMAT - explicit limitations:
+    - All parameter values are extracted as strings from element text.
+    - Boolean strings ("true"/"false") are coerced to Python bool.
+    - Integer and float values become strings, e.g. <count>3</count> -> "3".
+    - Null/none values become the string "null" or empty string.
+    - Nested XML structures (lists, dicts) inside parameters are silently
+      collapsed to their concatenated text, losing all structure.
+    - Attribute values on parameter elements are ignored.
+
+    This format is provided as a compatibility fallback only.  Callers
+    that require type-accurate arguments should use canonical format.
 
     Returns a list of Candidate objects (may be empty).
     """
