@@ -10,13 +10,16 @@ The counting is performed against the fully rendered Amplify request
 insertion, and any wrapper text are included in the prompt count.
 """
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Characters per token -- conservative heuristic.
 # English text averages ~4 chars/token for GPT-family tokenizers.
 _CHARS_PER_TOKEN = 4
+
+# Pricing unit: Amplify returns cost in dollars per million tokens.
+_TOKENS_PER_MILLION = 1_000_000
 
 
 def estimate_tokens(text: str) -> int:
@@ -64,3 +67,23 @@ def count_completion_tokens(content: str) -> int:
     response actually represents.
     """
     return estimate_tokens(content)
+
+
+def calculate_cost(
+    prompt_tokens: int,
+    completion_tokens: int,
+    input_cost_per_million: Optional[float],
+    output_cost_per_million: Optional[float],
+) -> Optional[float]:
+    """Compute estimated USD cost for a request.
+
+    Pricing is expressed in dollars per million tokens, matching the
+    convention used throughout the models endpoint.  Returns None when
+    either pricing value is absent, so callers can omit the field
+    rather than report a misleading zero.
+    """
+    if input_cost_per_million is None or output_cost_per_million is None:
+        return None
+    input_cost = prompt_tokens * input_cost_per_million / _TOKENS_PER_MILLION
+    output_cost = completion_tokens * output_cost_per_million / _TOKENS_PER_MILLION
+    return round(input_cost + output_cost, 10)

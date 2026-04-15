@@ -21,7 +21,7 @@ from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.error_handling import normalize_upstream_error, create_validation_error
 from open_amplify_ai.streaming import stream_amplify_response
-from open_amplify_ai.token_counting import count_prompt_tokens, count_completion_tokens
+from open_amplify_ai.token_counting import calculate_cost, count_prompt_tokens, count_completion_tokens
 from open_amplify_ai.tool_parsing import parse_tool_calls, handle_mixed_output
 from open_amplify_ai.transformation import (
     internal_request_to_amplify,
@@ -72,9 +72,13 @@ async def create_chat_completion(
     
     # Validate max_tokens against model limits
     model_metadata = await get_model_metadata(internal_req.model, headers)
+    input_cost_per_million = None
+    output_cost_per_million = None
     if model_metadata:
         output_limit = model_metadata.get("outputTokenLimit")
         context_limit = model_metadata.get("inputContextWindow")
+        input_cost_per_million = model_metadata.get("inputTokenCost")
+        output_cost_per_million = model_metadata.get("outputTokenCost")
         
         if output_limit and internal_req.max_tokens:
             if internal_req.max_tokens > output_limit:
@@ -131,6 +135,8 @@ async def create_chat_completion(
                     tools=internal_req.tools,
                     include_usage=include_usage,
                     prompt_tokens=prompt_tokens,
+                    input_cost_per_million=input_cost_per_million,
+                    output_cost_per_million=output_cost_per_million,
                 ),
                 media_type="text/event-stream",
             )
@@ -210,6 +216,26 @@ async def create_chat_completion(
                 completion_text += tc.function_arguments
         completion_tokens = count_completion_tokens(completion_text)
         
+        # Compute estimated cost when model pricing is available
+        request_cost = calculate_cost(
+            prompt_tokens,
+            completion_tokens,
+            input_cost_per_million,
+            output_cost_per_million,
+        )
+        
+        # Build usage object
+        usage_obj = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {
+                "cached_tokens": 0,
+            },
+        }
+        if request_cost is not None:
+            usage_obj["cost"] = request_cost
+        
         # Build OpenAI response
         return {
             "id": completion_id,
@@ -224,11 +250,7 @@ async def create_chat_completion(
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
+            "usage": usage_obj,
         }
     
     except httpx.HTTPError as e:

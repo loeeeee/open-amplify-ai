@@ -91,7 +91,7 @@ Alias entries (`default`, `advanced`, `cheapest`, `documentCaching`) are filtere
     - Streaming state machine for clean mode transitions
     - Precise HTTP status code mapping
     - See [`docs-vibe/72-chat-endpoint-refactor-complete.md`](docs-vibe/72-chat-endpoint-refactor-complete.md), [`docs-vibe/91-tool-parsing-refactor.md`](docs-vibe/91-tool-parsing-refactor.md), and [`docs-vibe/92-tool-parsing-part2.md`](docs-vibe/92-tool-parsing-part2.md) for details
-  - Local usage accounting: every response includes a `usage` object with estimated `prompt_tokens`, `completion_tokens`, and `total_tokens`. Counts are computed from the post-transformation Amplify request (chars/4 heuristic). For streaming, the final chunk includes usage when `stream_options.include_usage` is true. See [`docs-vibe/89-local-usage-accounting.md`](docs-vibe/89-local-usage-accounting.md) for details.
+  - Local usage accounting: every response includes a `usage` object with estimated `prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details.cached_tokens` (always 0, Amplify does not report cache hits), and `cost` (USD, present when model pricing is available). Counts are computed from the post-transformation Amplify request (chars/4 heuristic). For streaming, the final chunk includes the full usage block when `stream_options.include_usage` is true. See [`docs-vibe/89-local-usage-accounting.md`](docs-vibe/89-local-usage-accounting.md) and [`docs-vibe/93-usage-fields-refactor.md`](docs-vibe/93-usage-fields-refactor.md) for details.
 
 ### Files
 

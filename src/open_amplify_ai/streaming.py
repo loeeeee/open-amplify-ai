@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
-from open_amplify_ai.token_counting import count_completion_tokens
+from open_amplify_ai.token_counting import calculate_cost, count_completion_tokens
 from open_amplify_ai.tool_parsing import parse_tool_calls
 from open_amplify_ai.types import AmplifyChatRequest, ToolDefinition
 
@@ -38,12 +38,16 @@ class StreamingStateMachine:
         created: int,
         tools: Optional[List[ToolDefinition]] = None,
         prompt_tokens: int = 0,
+        input_cost_per_million: Optional[float] = None,
+        output_cost_per_million: Optional[float] = None,
     ):
         self.model = model
         self.completion_id = completion_id
         self.created = created
         self.tools = tools
         self.prompt_tokens = prompt_tokens
+        self.input_cost_per_million = input_cost_per_million
+        self.output_cost_per_million = output_cost_per_million
         
         self.mode = StreamingMode.INIT
         self.buffer = ""
@@ -182,14 +186,31 @@ class StreamingStateMachine:
         )
     
     def create_usage_chunk(self) -> Dict[str, Any]:
-        """Create usage chunk with estimated token counts.
+        """Create usage chunk with estimated token counts, cache details, and cost.
 
         Completion tokens are computed from the accumulated content and
-        tool-call arguments emitted during the stream.
+        tool-call arguments emitted during the stream.  Cost is estimated
+        when model pricing is available.
         """
         completion_text = self.accumulated_content + self.accumulated_tool_args
         completion_tokens = count_completion_tokens(completion_text)
         total_tokens = self.prompt_tokens + completion_tokens
+        request_cost = calculate_cost(
+            self.prompt_tokens,
+            completion_tokens,
+            self.input_cost_per_million,
+            self.output_cost_per_million,
+        )
+        usage: Dict[str, Any] = {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "prompt_tokens_details": {
+                "cached_tokens": 0,
+            },
+        }
+        if request_cost is not None:
+            usage["cost"] = request_cost
         return {
             "id": self.completion_id,
             "object": "chat.completion.chunk",
@@ -197,11 +218,7 @@ class StreamingStateMachine:
             "model": self.model,
             "system_fingerprint": "",
             "choices": [],
-            "usage": {
-                "prompt_tokens": self.prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            },
+            "usage": usage,
         }
     
     def _create_chunk(
@@ -259,6 +276,8 @@ async def stream_amplify_response(
     tools: Optional[List[ToolDefinition]] = None,
     include_usage: bool = False,
     prompt_tokens: int = 0,
+    input_cost_per_million: Optional[float] = None,
+    output_cost_per_million: Optional[float] = None,
 ) -> AsyncIterator[str]:
     """
     Stream Amplify response with state machine handling.
@@ -271,6 +290,8 @@ async def stream_amplify_response(
         created=created,
         tools=tools,
         prompt_tokens=prompt_tokens,
+        input_cost_per_million=input_cost_per_million,
+        output_cost_per_million=output_cost_per_million,
     )
     
     try:

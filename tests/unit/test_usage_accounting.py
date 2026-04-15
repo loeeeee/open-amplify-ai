@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from open_amplify_ai.server import app
 from open_amplify_ai.token_counting import (
+    calculate_cost,
     count_completion_tokens,
     count_message_tokens,
     count_prompt_tokens,
@@ -308,3 +309,147 @@ def test_streaming_no_usage_chunk_without_include_usage(mocker) -> None:
         if line.startswith("data: ") and line[6:] != "[DONE]":
             chunk = json.loads(line[6:])
             assert "usage" not in chunk, "Usage chunk should not appear without include_usage"
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for calculate_cost
+# ---------------------------------------------------------------------------
+
+
+def test_calculate_cost_basic() -> None:
+    """Cost is computed from prompt and completion tokens with given pricing."""
+    # 1000 prompt tokens at $3/M input, 500 completion tokens at $15/M output
+    # cost = 1000*3/1_000_000 + 500*15/1_000_000 = 0.003 + 0.0075 = 0.0105
+    result = calculate_cost(1000, 500, 3.0, 15.0)
+    assert result is not None
+    assert abs(result - 0.0105) < 1e-9
+
+
+def test_calculate_cost_zero_tokens() -> None:
+    """Zero tokens yields zero cost."""
+    result = calculate_cost(0, 0, 3.0, 15.0)
+    assert result == 0.0
+
+
+def test_calculate_cost_missing_input_price() -> None:
+    """Returns None when input pricing is absent."""
+    assert calculate_cost(100, 50, None, 15.0) is None
+
+
+def test_calculate_cost_missing_output_price() -> None:
+    """Returns None when output pricing is absent."""
+    assert calculate_cost(100, 50, 3.0, None) is None
+
+
+def test_calculate_cost_both_prices_missing() -> None:
+    """Returns None when both pricing values are absent."""
+    assert calculate_cost(100, 50, None, None) is None
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: prompt_tokens_details and cost in non-streaming response
+# ---------------------------------------------------------------------------
+
+
+def test_non_streaming_usage_has_prompt_tokens_details(mocker) -> None:
+    """Non-streaming response includes prompt_tokens_details with cached_tokens."""
+    resp = _make_json_response(mocker, {"success": True, "data": "Hello world"})
+    mocker.patch(
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
+    )
+
+    response = client.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello world"}],
+    })
+    assert response.status_code == 200
+    data = response.json()
+
+    usage = data["usage"]
+    assert "prompt_tokens_details" in usage, "prompt_tokens_details must be present"
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 0
+
+
+def test_non_streaming_usage_cost_absent_without_model_pricing(mocker) -> None:
+    """Cost field is absent when model metadata cannot be fetched."""
+    resp = _make_json_response(mocker, {"success": True, "data": "Hello world"})
+    mocker.patch(
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
+    )
+    # Patch model metadata to return None (no pricing available)
+    mocker.patch(
+        "open_amplify_ai.routers.chat.get_model_metadata",
+        return_value=None,
+    )
+
+    response = client.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello"}],
+    })
+    assert response.status_code == 200
+    usage = response.json()["usage"]
+    assert "cost" not in usage, "cost should be absent when pricing is unavailable"
+
+
+def test_non_streaming_usage_cost_present_with_model_pricing(mocker) -> None:
+    """Cost field is present and non-negative when model metadata provides pricing."""
+    resp = _make_json_response(mocker, {"success": True, "data": "A" * 80})
+    mocker.patch(
+        "open_amplify_ai.routers.chat.httpx.AsyncClient",
+        return_value=_make_async_client(mocker, resp),
+    )
+    mocker.patch(
+        "open_amplify_ai.routers.chat.get_model_metadata",
+        return_value={
+            "inputTokenCost": 3.0,
+            "outputTokenCost": 15.0,
+        },
+    )
+
+    response = client.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello world"}],
+    })
+    assert response.status_code == 200
+    usage = response.json()["usage"]
+    assert "cost" in usage, "cost should be present when pricing is available"
+    assert usage["cost"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: prompt_tokens_details and cost in streaming response
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_usage_chunk_has_prompt_tokens_details(mocker) -> None:
+    """Streaming usage chunk includes prompt_tokens_details.cached_tokens."""
+    lines = [
+        'data: {"data":"' + "A" * 80 + '"}',
+        "data: [DONE]",
+    ]
+    mocker.patch(
+        "open_amplify_ai.streaming.httpx.AsyncClient",
+        return_value=_make_streaming_client(mocker, lines),
+    )
+
+    response = client.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello world"}],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    })
+    assert response.status_code == 200
+
+    usage_chunk = None
+    for line in response.text.strip().split("\n"):
+        if line.startswith("data: ") and line[6:] != "[DONE]":
+            chunk = json.loads(line[6:])
+            if chunk.get("choices") == [] and "usage" in chunk:
+                usage_chunk = chunk
+
+    assert usage_chunk is not None, "No usage chunk found"
+    usage = usage_chunk["usage"]
+    assert "prompt_tokens_details" in usage
+    assert usage["prompt_tokens_details"]["cached_tokens"] == 0

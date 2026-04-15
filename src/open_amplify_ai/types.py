@@ -130,6 +130,8 @@ class InternalResponse:
     model: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0
+    cost: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
