@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
 
 from open_amplify_ai.config import AMPLIFY_BASE_URL
+from open_amplify_ai.token_counting import count_completion_tokens
 from open_amplify_ai.tool_parsing import parse_tool_calls
 from open_amplify_ai.types import AmplifyChatRequest, ToolDefinition
 
@@ -36,16 +37,20 @@ class StreamingStateMachine:
         completion_id: str,
         created: int,
         tools: Optional[List[ToolDefinition]] = None,
+        prompt_tokens: int = 0,
     ):
         self.model = model
         self.completion_id = completion_id
         self.created = created
         self.tools = tools
+        self.prompt_tokens = prompt_tokens
         
         self.mode = StreamingMode.INIT
         self.buffer = ""
         self.tool_call_detected = False
         self.content_emitted = False
+        self.accumulated_content = ""  # Track all emitted content for token counting
+        self.accumulated_tool_args = ""  # Track tool call arguments for token counting
     
     def process_delta(self, delta: str) -> List[Dict[str, Any]]:
         """
@@ -86,6 +91,7 @@ class StreamingStateMachine:
                         chunk = self._create_chunk({"content": parse_result.remaining_content})
                         chunks.append(chunk)
                         self.content_emitted = True
+                        self.accumulated_content += parse_result.remaining_content
                     
                     # Emit tool call chunks
                     for tool_call in parse_result.tool_calls:
@@ -115,6 +121,7 @@ class StreamingStateMachine:
                             }],
                         })
                         chunks.append(chunk)
+                        self.accumulated_tool_args += tool_call.function_arguments
                     
                     # Clear buffer
                     self.buffer = ""
@@ -131,6 +138,7 @@ class StreamingStateMachine:
                     chunk = self._create_chunk({"content": self.buffer})
                     chunks.append(chunk)
                     self.content_emitted = True
+                    self.accumulated_content += self.buffer
                     self.buffer = ""
         
         elif self.mode == StreamingMode.TOOL_CALL:
@@ -156,6 +164,7 @@ class StreamingStateMachine:
                 chunk = self._create_chunk({"content": self.buffer})
                 chunks.append(chunk)
                 self.content_emitted = True
+                self.accumulated_content += self.buffer
             
             self.buffer = ""
         
@@ -173,9 +182,14 @@ class StreamingStateMachine:
         )
     
     def create_usage_chunk(self) -> Dict[str, Any]:
+        """Create usage chunk with estimated token counts.
+
+        Completion tokens are computed from the accumulated content and
+        tool-call arguments emitted during the stream.
         """
-        Create usage chunk (with zero values for now).
-        """
+        completion_text = self.accumulated_content + self.accumulated_tool_args
+        completion_tokens = count_completion_tokens(completion_text)
+        total_tokens = self.prompt_tokens + completion_tokens
         return {
             "id": self.completion_id,
             "object": "chat.completion.chunk",
@@ -184,9 +198,9 @@ class StreamingStateMachine:
             "system_fingerprint": "",
             "choices": [],
             "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
             },
         }
     
@@ -244,6 +258,7 @@ async def stream_amplify_response(
     created: int,
     tools: Optional[List[ToolDefinition]] = None,
     include_usage: bool = False,
+    prompt_tokens: int = 0,
 ) -> AsyncIterator[str]:
     """
     Stream Amplify response with state machine handling.
@@ -255,6 +270,7 @@ async def stream_amplify_response(
         completion_id=completion_id,
         created=created,
         tools=tools,
+        prompt_tokens=prompt_tokens,
     )
     
     try:

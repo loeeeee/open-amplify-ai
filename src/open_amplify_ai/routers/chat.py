@@ -21,6 +21,7 @@ from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.error_handling import normalize_upstream_error, create_validation_error
 from open_amplify_ai.streaming import stream_amplify_response
+from open_amplify_ai.token_counting import count_prompt_tokens, count_completion_tokens
 from open_amplify_ai.tool_parsing import parse_tool_calls, handle_mixed_output
 from open_amplify_ai.transformation import (
     internal_request_to_amplify,
@@ -107,6 +108,9 @@ async def create_chat_completion(
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
     
+    # Count prompt tokens from fully rendered request (post-transformation)
+    prompt_tokens = count_prompt_tokens(amplify_request)
+    
     # Handle streaming
     if internal_req.stream:
         logger.info("Streaming response requested for model %s", internal_req.model)
@@ -126,6 +130,7 @@ async def create_chat_completion(
                     created=created,
                     tools=internal_req.tools,
                     include_usage=include_usage,
+                    prompt_tokens=prompt_tokens,
                 ),
                 media_type="text/event-stream",
             )
@@ -196,6 +201,14 @@ async def create_chat_completion(
                     mixed_result.fallback_reason,
                 )
         
+        # Count completion tokens from final assistant output
+        completion_text = mixed_result.content or ""
+        if mixed_result.has_tool_calls:
+            # Include serialized tool call arguments in token count
+            for tc in mixed_result.tool_calls:
+                completion_text += tc.function_arguments
+        completion_tokens = count_completion_tokens(completion_text)
+        
         # Build OpenAI response
         return {
             "id": completion_id,
@@ -211,9 +224,9 @@ async def create_chat_completion(
                 }
             ],
             "usage": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
             },
         }
     
