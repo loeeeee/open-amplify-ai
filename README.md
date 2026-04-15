@@ -211,6 +211,27 @@ All test commands are expected to run from within `nix-shell`.
   uv run pytest tests/unit -v
   ```
 
+  Unit tests include comprehensive coverage of:
+  - Chat endpoint functionality and validation
+  - Tool call parsing (canonical, legacy, JSON, and XML formats)
+  - Agent response validation (TOOL PROTOCOL v1 compliance)
+  - Mixed content handling
+  - Parameter compatibility
+  - Streaming protocol
+  - Response invariants
+  - Upstream error handling
+  - Token counting
+  - File operations
+  - Assistant management
+  - Thread operations
+  - Vector store operations
+  - Dashboard statistics
+
+  For agent response validation specifically:
+  ```bash
+  uv run pytest tests/unit/test_chat_agent_response_validation.py -v
+  ```
+
 - **Mocked integration tests (no Amplify token required)**  
   Exercise the full FastAPI stack with mocked Amplify upstream, including cline/kilo/openclaw usage patterns:
 
