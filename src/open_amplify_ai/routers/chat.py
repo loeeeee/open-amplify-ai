@@ -189,9 +189,10 @@ async def create_chat_completion(
                 for tc in parse_result.tool_calls
             ]
             
+            # Support mixed content: include both remaining_content and tool_calls
             message_obj = {
                 "role": "assistant",
-                "content": None,
+                "content": parse_result.remaining_content,
                 "tool_calls": tool_calls_json,
             }
             finish_reason = "tool_calls"

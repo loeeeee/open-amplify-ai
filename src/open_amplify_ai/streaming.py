@@ -61,8 +61,13 @@ class StreamingStateMachine:
         # In INIT or CONTENT mode, check if we should transition to TOOL_CALL
         if self.mode in (StreamingMode.INIT, StreamingMode.CONTENT):
             # Try to detect tool call in buffer
-            # Wait until we have enough content to make a decision
-            if len(self.buffer) > 50:  # Reasonable buffer size
+            # Check if buffer looks like it might have a tool call
+            should_check = (
+                len(self.buffer) > 20 or  # Some minimum content
+                self._looks_like_tool_call_start(self.buffer)  # Or has tool markers
+            )
+            
+            if should_check:
                 parse_result = parse_tool_calls(self.buffer, self.tools)
                 
                 if parse_result.is_tool_call:
@@ -70,11 +75,23 @@ class StreamingStateMachine:
                     self.mode = StreamingMode.TOOL_CALL
                     self.tool_call_detected = True
                     
+                    # Handle mixed content: emit remaining_content first if present
+                    if parse_result.remaining_content:
+                        if not self.content_emitted:
+                            # Emit role first if this is the first content
+                            chunk = self._create_chunk({"role": "assistant", "content": ""})
+                            chunks.append(chunk)
+                        
+                        # Emit the text content that was mixed with tool call
+                        chunk = self._create_chunk({"content": parse_result.remaining_content})
+                        chunks.append(chunk)
+                        self.content_emitted = True
+                    
                     # Emit tool call chunks
                     for tool_call in parse_result.tool_calls:
                         # First chunk with index and id
                         chunk = self._create_chunk({
-                            "role": "assistant",
+                            "role": "assistant" if not self.content_emitted else None,
                             "content": None,
                             "tool_calls": [{
                                 "index": 0,
@@ -267,6 +284,19 @@ async def stream_amplify_response(
                                 or parsed.get("content", "")
                                 or parsed.get("message", "")
                             )
+                            # If content_delta is not a string, convert to JSON string
+                            if not isinstance(content_delta, str):
+                                content_delta = json.dumps(content_delta)
+                            # If content looks like escaped JSON, try to unescape it
+                            elif '\\"' in content_delta:
+                                try:
+                                    # Attempt to decode JSON string (handles escaped quotes)
+                                    unescaped = json.loads(f'"{content_delta}"')
+                                    if isinstance(unescaped, str):
+                                        content_delta = unescaped
+                                except (json.JSONDecodeError, ValueError):
+                                    # Keep original if unescaping fails
+                                    pass
                         except json.JSONDecodeError:
                             content_delta = payload_str
                     else:

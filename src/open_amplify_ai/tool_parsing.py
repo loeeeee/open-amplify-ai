@@ -225,14 +225,15 @@ def try_json_format(
     """
     Try JSON format with strong anchors: {"tool": ...} or {"command": ...}
     
-    Strong anchor: Must have "tool" or "command" field near start.
+    Strong anchor: Must have "tool" or "command" field.
+    Supports mixed content: extracts JSON and returns remaining text.
     """
-    # Strong anchor: check for tool/command field in first 100 chars
-    if '"tool"' not in content[:100] and '"command"' not in content[:100]:
+    # Strong anchor: check for tool/command field anywhere in content
+    if '"tool"' not in content and '"command"' not in content:
         return ToolParseResult(is_tool_call=False)
     
     try:
-        # Try parsing entire content
+        # Try parsing entire content first
         parsed = json.loads(content.strip())
         
         if not isinstance(parsed, dict):
@@ -262,27 +263,54 @@ def try_json_format(
         )
     
     except json.JSONDecodeError:
-        # Try to extract JSON block
-        match = re.search(r'(\{[^}]*["\'](?:tool|command)["\'][^}]*\})', content)
-        if match:
+        # Try to extract JSON block from mixed content
+        # Use a more sophisticated regex that handles nested braces
+        tool_calls_found = []
+        remaining_parts = []
+        last_end = 0
+        
+        # Find all potential JSON objects with tool/command fields
+        for match in re.finditer(r'\{(?:[^{}]|\{[^{}]*\})*\}', content):
+            json_str = match.group(0)
             try:
-                parsed = json.loads(match.group(1))
-                name = parsed.get("tool") or parsed.get("command")
-                if name and any(t.get_name() == name for t in tools):
-                    tool_call = ToolCall(
-                        id=f"call_{uuid.uuid4().hex[:12]}",
-                        type="function",
-                        function_name=name,
-                        function_arguments=json.dumps(parsed.get("parameters", {})),
-                    )
-                    return ToolParseResult(
-                        is_tool_call=True,
-                        tool_calls=[tool_call],
-                        remaining_content=None,
-                        parser_used="json_embedded",
-                    )
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict):
+                    name = parsed.get("tool") or parsed.get("command")
+                    if name and any(t.get_name() == name for t in tools):
+                        # Valid tool call found
+                        # Capture any text before this JSON block
+                        if match.start() > last_end:
+                            text_before = content[last_end:match.start()].strip()
+                            if text_before:
+                                remaining_parts.append(text_before)
+                        
+                        tool_call = ToolCall(
+                            id=f"call_{uuid.uuid4().hex[:12]}",
+                            type="function",
+                            function_name=name,
+                            function_arguments=json.dumps(parsed.get("parameters", {})),
+                        )
+                        tool_calls_found.append(tool_call)
+                        last_end = match.end()
             except json.JSONDecodeError:
-                pass
+                continue
+        
+        # Capture any text after the last JSON block
+        if last_end < len(content):
+            text_after = content[last_end:].strip()
+            if text_after:
+                remaining_parts.append(text_after)
+        
+        if tool_calls_found:
+            # Combine remaining text parts
+            remaining_text = "\n".join(remaining_parts) if remaining_parts else None
+            
+            return ToolParseResult(
+                is_tool_call=True,
+                tool_calls=tool_calls_found,
+                remaining_content=remaining_text,
+                parser_used="json_embedded",
+            )
     
     return ToolParseResult(is_tool_call=False)
 
