@@ -119,6 +119,18 @@ def handle_mixed_output(
             tool_calls=[],
         )
     
+    # Check if the content is a partially parsed JSON response
+    # e.g. {"success": true, "message": "...", "data": "..."}
+    try:
+        parsed_content = json.loads(content)
+        if isinstance(parsed_content, dict) and "data" in parsed_content and "success" in parsed_content:
+            # Extract the data field which contains the actual content
+            data_content = parsed_content["data"]
+            if isinstance(data_content, str):
+                content = data_content
+    except json.JSONDecodeError:
+        pass
+    
     # Try to parse tool calls
     parse_result = parse_tool_calls(content, tools)
     
@@ -202,6 +214,49 @@ def handle_mixed_output(
     )
 
 
+def extract_json_objects(content: str) -> List[Tuple[str, int, int]]:
+    """
+    Extract all potential JSON objects from a string by counting braces.
+    Returns a list of tuples: (json_string, start_index, end_index).
+    """
+    results = []
+    brace_level = 0
+    in_string = False
+    escape_next = False
+    start_idx = -1
+    
+    for i, char in enumerate(content):
+        if escape_next:
+            escape_next = False
+            continue
+            
+        if char == '\\':
+            escape_next = True
+            continue
+            
+        if char == '"':
+            in_string = not in_string
+            continue
+            
+        if not in_string:
+            if char == '{':
+                if brace_level == 0:
+                    start_idx = i
+                brace_level += 1
+            elif char == '}':
+                brace_level -= 1
+                if brace_level == 0 and start_idx != -1:
+                    json_str = content[start_idx:i+1]
+                    results.append((json_str, start_idx, i+1))
+                    start_idx = -1
+                elif brace_level < 0:
+                    # Malformed, reset
+                    brace_level = 0
+                    start_idx = -1
+                    
+    return results
+
+
 def try_canonical_format(
     content: str,
     tools: Optional[List[ToolDefinition]] = None,
@@ -254,19 +309,17 @@ def try_canonical_format(
     
     except json.JSONDecodeError:
         # Maybe embedded in text, try to extract with surrounding content
-        # Use more comprehensive regex to capture nested braces
-        pattern = r'\{\s*["\']_tool_call["\']\s*:\s*true(?:[^{}]|\{[^{}]*\})*\}'
-        match = re.search(pattern, content, re.DOTALL)
-        if match:
+        # Use brace counting to handle nested JSON objects
+        for json_str, start_idx, end_idx in extract_json_objects(content):
             try:
-                parsed = json.loads(match.group(0))
-                if parsed.get("_tool_call") and parsed.get("tool"):
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict) and parsed.get("_tool_call") and parsed.get("tool"):
                     tool_name = parsed["tool"]
                     
                     # Validate tool exists
                     if tools and not any(t.get_name() == tool_name for t in tools):
                         logger.warning("Tool '%s' not in allowed tools", tool_name)
-                        return ToolParseResult(is_tool_call=False)
+                        continue
                     
                     tool_call = ToolCall(
                         id=parsed.get("id", f"call_{uuid.uuid4().hex[:12]}"),
@@ -277,8 +330,8 @@ def try_canonical_format(
                     
                     # Extract remaining content (text before and after tool call)
                     remaining_parts = []
-                    text_before = content[:match.start()].strip()
-                    text_after = content[match.end():].strip()
+                    text_before = content[:start_idx].strip()
+                    text_after = content[end_idx:].strip()
                     
                     if text_before:
                         remaining_parts.append(text_before)
@@ -294,7 +347,7 @@ def try_canonical_format(
                         parser_used="canonical_v1_embedded",
                     )
             except json.JSONDecodeError:
-                pass
+                continue
     
     return ToolParseResult(is_tool_call=False)
 
@@ -407,14 +460,13 @@ def try_json_format(
     
     except json.JSONDecodeError:
         # Try to extract JSON block from mixed content
-        # Use a more sophisticated regex that handles nested braces
+        # Use brace counting to handle nested JSON objects
         tool_calls_found = []
         remaining_parts = []
         last_end = 0
         
         # Find all potential JSON objects with tool/command fields
-        for match in re.finditer(r'\{(?:[^{}]|\{[^{}]*\})*\}', content):
-            json_str = match.group(0)
+        for json_str, start_idx, end_idx in extract_json_objects(content):
             try:
                 parsed = json.loads(json_str)
                 if isinstance(parsed, dict):
@@ -422,8 +474,8 @@ def try_json_format(
                     if name and any(t.get_name() == name for t in tools):
                         # Valid tool call found
                         # Capture any text before this JSON block
-                        if match.start() > last_end:
-                            text_before = content[last_end:match.start()].strip()
+                        if start_idx > last_end:
+                            text_before = content[last_end:start_idx].strip()
                             if text_before:
                                 remaining_parts.append(text_before)
                         
@@ -434,7 +486,7 @@ def try_json_format(
                             function_arguments=json.dumps(parsed.get("parameters", {})),
                         )
                         tool_calls_found.append(tool_call)
-                        last_end = match.end()
+                        last_end = end_idx
             except json.JSONDecodeError:
                 continue
         

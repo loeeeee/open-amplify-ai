@@ -75,9 +75,10 @@ The FastAPI server exposes a subset of the OpenAI API under `/v1/*`, backed by A
   - Refactored implementation with improved:
     - Strict request validation and explicit error handling
     - Deterministic tool calling with strong anchoring
+    - Robust mixed output handling (text + tool calls), including deeply nested JSON and partially parsed responses
     - Streaming state machine for clean mode transitions
     - Precise HTTP status code mapping
-    - See [`docs-vibe/72-chat-endpoint-refactor-complete.md`](docs-vibe/72-chat-endpoint-refactor-complete.md) for details
+    - See [`docs-vibe/72-chat-endpoint-refactor-complete.md`](docs-vibe/72-chat-endpoint-refactor-complete.md) and [`docs-vibe/01-mixed-response-refactoring.md`](docs-vibe/01-mixed-response-refactoring.md) for details
 
 ### Files
 
