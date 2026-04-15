@@ -224,7 +224,8 @@ def test_token_counter_records_upstream_exception(mocker) -> None:
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Hi"}],
     })
-    assert response.status_code == 500
+    # ConnectError maps to 502 per error_handling.py
+    assert response.status_code == 502
     assert write_mock.call_count >= 1
 
 

@@ -580,7 +580,7 @@ def test_client_custom_params_forwarded(mocker: Any) -> None:
 
 
 def test_client_amplify_error_handling(mocker: Any) -> None:
-    """Server returns 500 when Amplify upstream signals failure."""
+    """Server returns 502 when Amplify upstream connection fails."""
     import httpx as httpx_lib
 
     mock_client = mocker.AsyncMock()
@@ -594,8 +594,11 @@ def test_client_amplify_error_handling(mocker: Any) -> None:
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "Hello"}],
     })
-    assert response.status_code == 500
-    assert "Error communicating with Amplify AI" in response.json()["detail"]
+    # ConnectError maps to 502 per error_handling.py
+    assert response.status_code == 502
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "service_unavailable_error"
 
 
 # ---------------------------------------------------------------------------

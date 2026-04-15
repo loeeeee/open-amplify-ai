@@ -22,22 +22,7 @@ def _make_async_client(mocker, response):
 
 
 def test_top_p_parameter_handling(mocker):
-    """Test that top_p parameter is handled appropriately."""
-    captured = {}
-    
-    async def fake_post(url, **kwargs):
-        captured["payload"] = kwargs.get("json", {})
-        return mocker.Mock(
-            status_code=200,
-            raise_for_status=mocker.Mock(),
-            json=mocker.Mock(return_value={"success": True, "data": "ok"}),
-        )
-    
-    mock_client = mocker.AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.post = fake_post
-    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
-    
+    """Test that top_p parameter is rejected (not supported by Amplify)."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -47,8 +32,12 @@ def test_top_p_parameter_handling(mocker):
         },
     )
     
-    assert response.status_code == 200
-    # Check if top_p was forwarded (implementation-dependent)
+    assert response.status_code == 400
+    data = response.json()
+    assert "detail" in data
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "top_p" in error["message"].lower()
 
 
 def test_n_parameter_handling(mocker):
@@ -77,22 +66,7 @@ def test_n_parameter_handling(mocker):
 
 
 def test_stop_parameter_handling(mocker):
-    """Test that stop parameter is handled appropriately."""
-    captured = {}
-    
-    async def fake_post(url, **kwargs):
-        captured["payload"] = kwargs.get("json", {})
-        return mocker.Mock(
-            status_code=200,
-            raise_for_status=mocker.Mock(),
-            json=mocker.Mock(return_value={"success": True, "data": "ok"}),
-        )
-    
-    mock_client = mocker.AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.post = fake_post
-    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
-    
+    """Test that stop parameter is rejected (not supported by Amplify)."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -102,21 +76,15 @@ def test_stop_parameter_handling(mocker):
         },
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 400
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "stop" in error["message"].lower()
 
 
 def test_presence_penalty_parameter_handling(mocker):
-    """Test that presence_penalty parameter is handled."""
-    mock_response = mocker.Mock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = mocker.Mock()
-    mock_response.json.return_value = {"success": True, "data": "ok"}
-    
-    mocker.patch(
-        "open_amplify_ai.routers.chat.httpx.AsyncClient",
-        return_value=_make_async_client(mocker, mock_response),
-    )
-    
+    """Test that presence_penalty parameter is rejected (not supported by Amplify)."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -126,21 +94,15 @@ def test_presence_penalty_parameter_handling(mocker):
         },
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 400
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "presence_penalty" in error["message"].lower()
 
 
 def test_frequency_penalty_parameter_handling(mocker):
-    """Test that frequency_penalty parameter is handled."""
-    mock_response = mocker.Mock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = mocker.Mock()
-    mock_response.json.return_value = {"success": True, "data": "ok"}
-    
-    mocker.patch(
-        "open_amplify_ai.routers.chat.httpx.AsyncClient",
-        return_value=_make_async_client(mocker, mock_response),
-    )
-    
+    """Test that frequency_penalty parameter is rejected (not supported by Amplify)."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -150,7 +112,11 @@ def test_frequency_penalty_parameter_handling(mocker):
         },
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 400
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "frequency_penalty" in error["message"].lower()
 
 
 def test_user_parameter_handling(mocker):
@@ -178,17 +144,7 @@ def test_user_parameter_handling(mocker):
 
 
 def test_seed_parameter_handling(mocker):
-    """Test that seed parameter is handled for reproducibility."""
-    mock_response = mocker.Mock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = mocker.Mock()
-    mock_response.json.return_value = {"success": True, "data": "ok"}
-    
-    mocker.patch(
-        "open_amplify_ai.routers.chat.httpx.AsyncClient",
-        return_value=_make_async_client(mocker, mock_response),
-    )
-    
+    """Test that seed parameter is rejected (determinism not supported by Amplify)."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -198,21 +154,15 @@ def test_seed_parameter_handling(mocker):
         },
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 400
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "seed" in error["message"].lower()
 
 
 def test_response_format_parameter_handling(mocker):
-    """Test that response_format parameter is handled."""
-    mock_response = mocker.Mock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = mocker.Mock()
-    mock_response.json.return_value = {"success": True, "data": '{"result": "json"}'}
-    
-    mocker.patch(
-        "open_amplify_ai.routers.chat.httpx.AsyncClient",
-        return_value=_make_async_client(mocker, mock_response),
-    )
-    
+    """Test that response_format parameter is rejected (structured output not fully supported by Amplify)."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -222,7 +172,11 @@ def test_response_format_parameter_handling(mocker):
         },
     )
     
-    assert response.status_code == 200
+    assert response.status_code == 400
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "response_format" in error["message"].lower()
 
 
 def test_tool_choice_parameter_handling(mocker):
@@ -322,22 +276,7 @@ def test_logit_bias_parameter_handling(mocker):
 
 
 def test_multiple_parameters_together(mocker):
-    """Test that multiple parameters can be used together."""
-    captured = {}
-    
-    async def fake_post(url, **kwargs):
-        captured["payload"] = kwargs.get("json", {})
-        return mocker.Mock(
-            status_code=200,
-            raise_for_status=mocker.Mock(),
-            json=mocker.Mock(return_value={"success": True, "data": "ok"}),
-        )
-    
-    mock_client = mocker.AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.post = fake_post
-    mocker.patch("open_amplify_ai.routers.chat.httpx.AsyncClient", return_value=mock_client)
-    
+    """Test that rejected parameters cause failure even when mixed with valid ones."""
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -352,13 +291,11 @@ def test_multiple_parameters_together(mocker):
         },
     )
     
-    assert response.status_code == 200
-    
-    # Verify temperature and max_tokens are forwarded
-    if "payload" in captured and "data" in captured["payload"]:
-        data = captured["payload"]["data"]
-        assert data.get("temperature") == 0.7
-        assert data.get("max_tokens") == 100
+    # Should reject due to unsupported parameters
+    assert response.status_code == 400
+    data = response.json()
+    error = data["detail"]["error"]
+    assert error["type"] == "invalid_request_error"
 
 
 @pytest.mark.parametrize(
@@ -366,12 +303,12 @@ def test_multiple_parameters_together(mocker):
     [
         ("temperature", 0.7, True),
         ("max_tokens", 100, True),
-        ("top_p", 0.9, True),
-        ("presence_penalty", 0.5, True),
-        ("frequency_penalty", 0.5, True),
+        ("top_p", 0.9, False),  # Rejected by Amplify
+        ("presence_penalty", 0.5, False),  # Rejected by Amplify
+        ("frequency_penalty", 0.5, False),  # Rejected by Amplify
         ("user", "user-123", True),
-        ("seed", 42, True),
-        ("stop", ["END"], True),
+        ("seed", 42, False),  # Rejected by Amplify
+        ("stop", ["END"], False),  # Rejected by Amplify
     ],
 )
 def test_parameter_acceptance_matrix(mocker, param_name, param_value, should_accept):
@@ -397,4 +334,7 @@ def test_parameter_acceptance_matrix(mocker, param_name, param_value, should_acc
     if should_accept:
         assert response.status_code == 200
     else:
-        assert response.status_code in [400, 422]
+        assert response.status_code == 400
+        data = response.json()
+        error = data["detail"]["error"]
+        assert error["type"] == "invalid_request_error"

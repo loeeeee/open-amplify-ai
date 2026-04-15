@@ -20,10 +20,16 @@ def _make_error_response(mocker, status_code, json_data=None, text=None):
     mock_response = mocker.Mock(spec=httpx.Response)
     mock_response.status_code = status_code
     
-    if json_data:
-        mock_response.json.return_value = json_data
+    # Always set text to a string to avoid Mock slicing errors
     if text:
         mock_response.text = text
+    elif json_data:
+        # Convert json_data to string for text attribute
+        mock_response.text = json.dumps(json_data)
+        mock_response.json.return_value = json_data
+    else:
+        # Default empty string if neither provided
+        mock_response.text = ""
     
     # Make raise_for_status raise an HTTPStatusError
     def raise_for_status():
@@ -62,9 +68,9 @@ def test_upstream_401_unauthorized(mocker):
     
     assert response.status_code == 401
     data = response.json()
-    assert "error" in data
-    assert data["error"]["type"] == "authentication_error"
-    assert "message" in data["error"]
+    error = data["detail"]["error"]
+    assert error["type"] == "authentication_error"
+    assert "message" in error
 
 
 def test_upstream_403_forbidden(mocker):
@@ -84,8 +90,8 @@ def test_upstream_403_forbidden(mocker):
     
     assert response.status_code == 403
     data = response.json()
-    assert "error" in data
-    assert data["error"]["type"] == "permission_error"
+    error = data["detail"]["error"]
+    assert error["type"] == "permission_error"
 
 
 def test_upstream_404_not_found(mocker):
@@ -105,8 +111,8 @@ def test_upstream_404_not_found(mocker):
     
     assert response.status_code == 404
     data = response.json()
-    assert "error" in data
-    assert data["error"]["type"] == "not_found_error"
+    error = data["detail"]["error"]
+    assert error["type"] == "not_found_error"
 
 
 def test_upstream_429_rate_limit(mocker):
@@ -136,8 +142,8 @@ def test_upstream_429_rate_limit(mocker):
     
     assert response.status_code == 429
     data = response.json()
-    assert "error" in data
-    assert data["error"]["type"] == "rate_limit_error"
+    error = data["detail"]["error"]
+    assert error["type"] == "rate_limit_error"
     
     # Check if rate limit headers are preserved
     if "retry-after" in response.headers:
@@ -161,8 +167,8 @@ def test_upstream_500_internal_error(mocker):
     
     assert response.status_code == 500
     data = response.json()
-    assert "error" in data
-    assert data["error"]["type"] in ["api_error", "internal_server_error"]
+    error = data["detail"]["error"]
+    assert error["type"] in ["api_error", "internal_server_error"]
 
 
 def test_upstream_502_bad_gateway(mocker):
@@ -180,7 +186,8 @@ def test_upstream_502_bad_gateway(mocker):
     
     assert response.status_code == 502
     data = response.json()
-    assert "error" in data
+    error = data["detail"]["error"]
+    assert error["type"] == "service_unavailable_error"
 
 
 def test_upstream_503_service_unavailable(mocker):
@@ -200,7 +207,8 @@ def test_upstream_503_service_unavailable(mocker):
     
     assert response.status_code == 503
     data = response.json()
-    assert "error" in data
+    error = data["detail"]["error"]
+    assert error["type"] == "service_unavailable_error"
 
 
 def test_upstream_504_gateway_timeout(mocker):
@@ -218,7 +226,8 @@ def test_upstream_504_gateway_timeout(mocker):
     
     assert response.status_code == 504
     data = response.json()
-    assert "error" in data
+    error = data["detail"]["error"]
+    assert error["type"] == "timeout_error"
 
 
 def test_upstream_timeout_exception(mocker):
@@ -234,11 +243,12 @@ def test_upstream_timeout_exception(mocker):
         json={"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}]},
     )
     
-    # Should return 504 or 500 for timeout
-    assert response.status_code in [500, 504]
+    # TimeoutException maps to 504 per error_handling.py
+    assert response.status_code == 504
     data = response.json()
-    assert "error" in data
-    assert "timeout" in data["error"]["message"].lower()
+    error = data["detail"]["error"]
+    assert error["type"] == "timeout_error"
+    assert "timeout" in error["message"].lower()
 
 
 def test_upstream_connection_error(mocker):
@@ -256,10 +266,11 @@ def test_upstream_connection_error(mocker):
         json={"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}]},
     )
     
-    # Should return 502 or 503 for connection error
-    assert response.status_code in [500, 502, 503]
+    # ConnectError maps to 502 per error_handling.py
+    assert response.status_code == 502
     data = response.json()
-    assert "error" in data
+    error = data["detail"]["error"]
+    assert error["type"] == "service_unavailable_error"
 
 
 def test_upstream_malformed_json_response(mocker):
@@ -373,10 +384,10 @@ def test_error_response_has_openai_shape(mocker):
     )
     
     data = response.json()
-    # OpenAI error shape: {"error": {"message": str, "type": str, "code": str?}}
-    assert "error" in data
-    assert isinstance(data["error"], dict)
-    assert "message" in data["error"]
-    assert "type" in data["error"]
-    assert isinstance(data["error"]["message"], str)
-    assert isinstance(data["error"]["type"], str)
+    # OpenAI error shape: {"detail": {"error": {"message": str, "type": str, "code": str?}}}
+    error = data["detail"]["error"]
+    assert isinstance(error, dict)
+    assert "message" in error
+    assert "type" in error
+    assert isinstance(error["message"], str)
+    assert isinstance(error["type"], str)
