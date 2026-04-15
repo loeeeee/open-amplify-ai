@@ -21,7 +21,7 @@ from open_amplify_ai.config import AMPLIFY_BASE_URL
 from open_amplify_ai.auth import get_amplify_headers
 from open_amplify_ai.error_handling import normalize_upstream_error, create_validation_error
 from open_amplify_ai.streaming import stream_amplify_response
-from open_amplify_ai.tool_parsing import parse_tool_calls
+from open_amplify_ai.tool_parsing import parse_tool_calls, handle_mixed_output
 from open_amplify_ai.transformation import (
     internal_request_to_amplify,
     validate_tool_output,
@@ -151,32 +151,11 @@ async def create_chat_completion(
         except Exception:
             content = response.text
         
-        # Stage 5: Parse tool calls using deterministic parser
-        parse_result = parse_tool_calls(content, internal_req.tools)
+        # Stage 5: Handle mixed output (text + tool calls)
+        mixed_result = handle_mixed_output(content, internal_req.tools)
         
-        if parse_result.is_tool_call:
-            # Validate tool calls if tools were provided
-            if internal_req.tools:
-                for tool_call in parse_result.tool_calls:
-                    try:
-                        args = json.loads(tool_call.function_arguments)
-                        is_valid = validate_tool_output(
-                            tool_call.function_name,
-                            args,
-                            internal_req.tools,
-                        )
-                        if not is_valid:
-                            logger.warning(
-                                "Tool call validation failed for '%s'",
-                                tool_call.function_name,
-                            )
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Invalid JSON in tool call arguments for '%s'",
-                            tool_call.function_name,
-                        )
-            
-            # Build tool_calls response
+        if mixed_result.has_tool_calls:
+            # Build tool_calls response with mixed content support
             tool_calls_json = [
                 {
                     "id": tc.id,
@@ -186,23 +165,36 @@ async def create_chat_completion(
                         "arguments": tc.function_arguments,
                     },
                 }
-                for tc in parse_result.tool_calls
+                for tc in mixed_result.tool_calls
             ]
             
-            # Support mixed content: include both remaining_content and tool_calls
+            # Mixed output: include both commentary text and tool_calls
+            # Per OpenAI spec, content can be present even with tool calls
             message_obj = {
                 "role": "assistant",
-                "content": parse_result.remaining_content,
+                "content": mixed_result.content,  # May be None or commentary text
                 "tool_calls": tool_calls_json,
             }
             finish_reason = "tool_calls"
+            
+            logger.info(
+                "Mixed output processed: content=%s, tool_calls=%d",
+                "present" if mixed_result.content else "none",
+                len(mixed_result.tool_calls),
+            )
         else:
-            # Normal content response
+            # Normal content response (no tool calls or validation failed)
             message_obj = {
                 "role": "assistant",
-                "content": content if isinstance(content, str) else str(content),
+                "content": mixed_result.content if mixed_result.content else "",
             }
             finish_reason = "stop"
+            
+            if not mixed_result.validation_passed:
+                logger.warning(
+                    "Tool call validation failed, returned as plain text. Reason: %s",
+                    mixed_result.fallback_reason,
+                )
         
         # Build OpenAI response
         return {
