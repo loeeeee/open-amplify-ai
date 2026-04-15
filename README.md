@@ -1,6 +1,6 @@
 # Amplify AI Compatibility Layer
 
-![Build](https://github.com/loeeeee/amplify-ai/actions/workflows/build.yml/badge.svg)
+![Build](https://github.com/loeeeee/open-amplify-ai/actions/workflows/build.yml/badge.svg)
 
 An OpenAI-compatible HTTP layer in front of the Vanderbilt Amplify AI API, designed primarily for internal developers running local AI tools (cline, openclaw, kilo, etc.) and NixOS deployments.
 
@@ -246,14 +246,14 @@ All test commands are expected to run from within `nix-shell`.
   uv run pytest tests/unit/test_chat_agent_response_validation.py -v
   ```
 
-- **Mocked integration tests (no Amplify token required)**  
+- **Mocked integration tests (no Amplify token required)**
   Exercise the full FastAPI stack with mocked Amplify upstream, including cline/kilo/openclaw usage patterns:
 
   ```bash
   uv run pytest tests/integration/mocked -v
   ```
 
-- **Live integration tests (real Amplify API, token required)**  
+- **Live integration tests (real Amplify API, token required)**
   Run against the real Amplify API, mirroring cline/kilo/openclaw request patterns:
 
   ```bash
