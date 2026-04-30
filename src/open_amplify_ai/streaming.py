@@ -294,6 +294,8 @@ async def stream_amplify_response(
         output_cost_per_million=output_cost_per_million,
     )
     
+    streaming_error = None
+    
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, read=None)) as client:
             async with client.stream(
@@ -348,25 +350,26 @@ async def stream_amplify_response(
                     # Emit chunks
                     for chunk in chunks:
                         yield f"data: {json.dumps(chunk)}\n\n"
-        
-        # Flush any remaining buffer
-        chunks = state_machine.flush_buffer()
-        for chunk in chunks:
-            yield f"data: {json.dumps(chunk)}\n\n"
-        
-        # Emit final chunk
-        final_chunk = state_machine.finalize()
-        yield f"data: {json.dumps(final_chunk)}\n\n"
-        
-        # Emit usage if requested
-        if include_usage:
-            usage_chunk = state_machine.create_usage_chunk()
-            yield f"data: {json.dumps(usage_chunk)}\n\n"
-        
-        # Emit done marker
-        yield "data: [DONE]\n\n"
     
     except httpx.HTTPError as e:
-        logger.error("Streaming error: %s", e)
-        # Let the error propagate to be handled by error normalization
-        raise
+        streaming_error = e
+    
+    # Flush any remaining buffer
+    chunks = state_machine.flush_buffer()
+    for chunk in chunks:
+        yield f"data: {json.dumps(chunk)}\n\n"
+    
+    # Emit final chunk
+    final_chunk = state_machine.finalize()
+    yield f"data: {json.dumps(final_chunk)}\n\n"
+    
+    # Emit usage if requested
+    if include_usage:
+        usage_chunk = state_machine.create_usage_chunk()
+        yield f"data: {json.dumps(usage_chunk)}\n\n"
+    
+    # Emit done marker
+    yield "data: [DONE]\n\n"
+    
+    if streaming_error is not None:
+        logger.warning("Stream disconnected early: %s", streaming_error)

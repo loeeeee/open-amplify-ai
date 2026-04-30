@@ -295,7 +295,8 @@ def test_upstream_malformed_json_response(mocker):
     # Should return 500 for malformed upstream response
     assert response.status_code == 500
     data = response.json()
-    assert "error" in data
+    error = data["detail"]["error"]
+    assert error["type"] == "api_error"
 
 
 def test_upstream_streaming_connection_closed_early(mocker):

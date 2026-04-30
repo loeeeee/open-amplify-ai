@@ -360,8 +360,8 @@ def test_streaming_tool_call_chunks_accumulate(mocker):
     tool_json_part2 = ',"parameters":{"path":"/tmp/test.txt"}}'
     
     lines = [
-        f'data: {{"data":"{tool_json_part1}"}}',
-        f'data: {{"data":"{tool_json_part2}"}}',
+        f"data: {json.dumps({'data': tool_json_part1})}",
+        f"data: {json.dumps({'data': tool_json_part2})}",
         "data: [DONE]",
     ]
     mocker.patch(

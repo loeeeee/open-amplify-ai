@@ -159,8 +159,17 @@ async def create_chat_completion(
         try:
             data = response.json()
             content = data.get("data", "")
-        except Exception:
-            content = response.text
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error("Malformed JSON from upstream: %s", e)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": {
+                        "message": f"Upstream returned malformed JSON: {e}",
+                        "type": "api_error",
+                    }
+                },
+            )
         
         # Stage 5: Handle mixed output (text + tool calls)
         mixed_result = handle_mixed_output(content, internal_req.tools)
@@ -253,6 +262,8 @@ async def create_chat_completion(
             "usage": usage_obj,
         }
     
+    except HTTPException:
+        raise
     except httpx.HTTPError as e:
         raise normalize_upstream_error(e, "chat completion", request_id)
     except Exception as e:
